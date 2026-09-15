@@ -60,7 +60,10 @@ impl NetworkCommandHandler {
 
         Self::spawn_trap_exit_signals(exit_tx, network_tx.clone());
 
-        let manager = NetworkManager::new();
+        // The network-manager crate's 15 s DEFAULT_TIMEOUT is not enough for a
+        // Pi Zero 2 W to reach Activated on some networks. Global to every wait()
+        // in the crate, deactivate() included - see the portal-delete on exit.
+        let manager = NetworkManager::with_method_timeout(45);
         debug!("NetworkManager connection initialized");
 
         let device = find_device(&manager, &config.interface)?;
@@ -527,7 +530,9 @@ fn get_access_points(device: &Device, own_ssid: &str) -> Result<Vec<AccessPoint>
 }
 
 fn get_access_points_impl(device: &Device, own_ssid: &str) -> Result<Vec<AccessPoint>> {
-    let retries_allowed = 10;
+    // A Pi Zero 2 W can need well over 10 s to leave AP mode and return a real
+    // neighbour scan.
+    let retries_allowed = 40;
     let mut retries = 0;
 
     let wifi_device = device.as_wifi_device().unwrap();

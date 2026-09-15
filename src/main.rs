@@ -31,6 +31,7 @@ mod exit;
 mod logger;
 mod network;
 mod privileges;
+mod reconnect_history;
 mod server;
 
 use std::io::Write;

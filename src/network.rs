@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
+use std::path::Path;
 use std::process;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -14,12 +15,14 @@ use config::Config;
 use dnsmasq::{start_dnsmasq, stop_dnsmasq};
 use errors::*;
 use exit::{exit, trap_exit_signals, ExitResult};
+use reconnect_history::{ReconnectHistory, HISTORY_FILE_PATH};
 use server::start_server;
 
 pub enum NetworkCommand {
     Activate,
     Timeout,
     Exit,
+    Reconnect,
     Connect {
         ssid: String,
         identity: String,
@@ -47,6 +50,8 @@ struct NetworkCommandHandler {
     server_tx: Sender<NetworkCommandResponse>,
     network_rx: Receiver<NetworkCommand>,
     activated: bool,
+    reconnect_history: ReconnectHistory,
+    reconnect_tick_count: u64,
 }
 
 impl NetworkCommandHandler {
@@ -70,10 +75,14 @@ impl NetworkCommandHandler {
 
         Self::spawn_server(config, exit_tx, server_rx, network_tx.clone());
 
-        Self::spawn_activity_timeout(config, network_tx);
+        Self::spawn_activity_timeout(config, network_tx.clone());
+
+        Self::spawn_periodic_reconnect(config, network_tx);
 
         let config = config.clone();
         let activated = false;
+        let reconnect_history = ReconnectHistory::load(Path::new(HISTORY_FILE_PATH));
+        let reconnect_tick_count = 0;
 
         Ok(NetworkCommandHandler {
             manager,
@@ -85,6 +94,8 @@ impl NetworkCommandHandler {
             server_tx,
             network_rx,
             activated,
+            reconnect_history,
+            reconnect_tick_count,
         })
     }
 
@@ -130,6 +141,30 @@ impl NetworkCommandHandler {
         });
     }
 
+    // Boot-time-only wired-connection awareness lives entirely in `scripts/start.sh`
+    // (see docs/specs/2026-08-10-conditional-wifi-reconnect.md) — this handler has no
+    // wired-awareness and never checks it. Treating wired-state changes as boot-time-only
+    // is a deliberate simplification that may be worth revisiting later.
+    fn spawn_periodic_reconnect(config: &Config, network_tx: Sender<NetworkCommand>) {
+        if !config.reconnect_enabled || config.reconnect_interval_minutes == 0 {
+            return;
+        }
+
+        let interval = Duration::from_secs(config.reconnect_interval_minutes.saturating_mul(60));
+
+        thread::spawn(move || loop {
+            thread::sleep(interval);
+
+            if let Err(err) = network_tx.send(NetworkCommand::Reconnect) {
+                error!(
+                    "Sending NetworkCommand::Reconnect failed: {}",
+                    err.to_string()
+                );
+                return;
+            }
+        });
+    }
+
     fn spawn_trap_exit_signals(exit_tx: &Sender<ExitResult>, network_tx: Sender<NetworkCommand>) {
         let exit_tx_trap = exit_tx.clone();
 
@@ -161,6 +196,11 @@ impl NetworkCommandHandler {
                 NetworkCommand::Timeout => {
                     if !self.activated {
                         info!("Timeout reached. Exiting...");
+                        return Ok(());
+                    }
+                }
+                NetworkCommand::Reconnect => {
+                    if self.reconnect()? {
                         return Ok(());
                     }
                 }
@@ -215,11 +255,7 @@ impl NetworkCommandHandler {
     fn connect(&mut self, ssid: &str, identity: &str, passphrase: &str) -> Result<bool> {
         delete_existing_connections_to_same_network(&self.manager, ssid);
 
-        if let Some(ref connection) = self.portal_connection {
-            stop_portal(connection, &self.config)?;
-        }
-
-        self.portal_connection = None;
+        self.tear_down_portal_if_up()?;
 
         self.access_points = get_access_points(&self.device)?;
 
@@ -233,16 +269,10 @@ impl NetworkCommandHandler {
             match wifi_device.connect(access_point, &credentials) {
                 Ok((connection, state)) => {
                     if state == ConnectionState::Activated {
-                        match wait_for_connectivity(&self.manager, 20) {
-                            Ok(has_connectivity) => {
-                                if has_connectivity {
-                                    info!("Internet connectivity established");
-                                } else {
-                                    warn!("Cannot establish Internet connectivity");
-                                }
-                            }
-                            Err(err) => error!("Getting Internet connectivity failed: {}", err),
-                        }
+                        self.reconnect_history
+                            .record_success(ssid, Path::new(HISTORY_FILE_PATH));
+
+                        confirm_connectivity_and_log(&self.manager);
 
                         return Ok(true);
                     }
@@ -267,6 +297,133 @@ impl NetworkCommandHandler {
         self.portal_connection = Some(create_portal(&self.device, &self.config)?);
 
         Ok(false)
+    }
+
+    /// Stops and clears the AP portal connection if one is currently up. A no-op if
+    /// it's already down (e.g. already torn down earlier in the same tick).
+    fn tear_down_portal_if_up(&mut self) -> Result<()> {
+        if let Some(ref connection) = self.portal_connection {
+            stop_portal(connection, &self.config)?;
+        }
+
+        self.portal_connection = None;
+
+        Ok(())
+    }
+
+    /// Periodically-triggered reconnect: try saved WiFi networks that are currently
+    /// visible in range, most-recently-connected first. Only touches the AP if there
+    /// is at least one candidate to try — except on a forced-rescan tick (every
+    /// `config.reconnect_rescan_every`th call), which refreshes the scan unconditionally
+    /// so a network that wasn't visible at boot (or the last successful scan) is
+    /// eventually noticed without requiring a manual captive-portal visit.
+    fn reconnect(&mut self) -> Result<bool> {
+        self.reconnect_tick_count = self.reconnect_tick_count.wrapping_add(1);
+
+        let force_rescan = is_forced_rescan_tick(
+            self.reconnect_tick_count,
+            self.config.reconnect_rescan_every,
+        );
+
+        if force_rescan {
+            info!(
+                "Forced periodic rescan (every {} ticks)",
+                self.config.reconnect_rescan_every
+            );
+
+            self.tear_down_portal_if_up()?;
+            self.access_points = get_access_points(&self.device)?;
+        }
+
+        let candidates = self.get_reconnect_candidates()?;
+
+        if candidates.is_empty() {
+            debug!("No saved networks currently in range - skipping periodic reconnect");
+
+            if force_rescan {
+                self.portal_connection = Some(create_portal(&self.device, &self.config)?);
+            }
+
+            return Ok(false);
+        }
+
+        info!(
+            "Periodic reconnect: attempting {} saved network(s) in range",
+            candidates.len()
+        );
+
+        self.tear_down_portal_if_up()?;
+
+        for candidate in &candidates {
+            let ssid = connection_ssid_as_str(candidate)
+                .unwrap_or("<unknown>")
+                .to_string();
+
+            info!("Reconnecting to saved network '{}'...", ssid);
+
+            match candidate.activate() {
+                Ok(ConnectionState::Activated) => {
+                    self.reconnect_history
+                        .record_success(&ssid, Path::new(HISTORY_FILE_PATH));
+
+                    confirm_connectivity_and_log(&self.manager);
+
+                    return Ok(true);
+                }
+                Ok(state) => {
+                    warn!(
+                        "Reconnecting to saved network not activated '{}': {:?}",
+                        ssid, state
+                    );
+                }
+                Err(e) => {
+                    warn!("Error reconnecting to saved network '{}': {}", ssid, e);
+                }
+            }
+        }
+
+        self.access_points = get_access_points(&self.device)?;
+
+        self.portal_connection = Some(create_portal(&self.device, &self.config)?);
+
+        Ok(false)
+    }
+
+    /// Saved WiFi station profiles (excludes wifi-connect's own AP/hotspot profile)
+    /// whose SSID is currently visible in the last known scan, ordered by wifi-connect's
+    /// own reconnect-history cache of last-successful-connection time, most recent first
+    /// (networks never recorded there sort last).
+    fn get_reconnect_candidates(&self) -> Result<Vec<Connection>> {
+        let visible_ssids: HashSet<&str> = self
+            .access_points
+            .iter()
+            .filter_map(|ap| ap.ssid().as_str().ok())
+            .collect();
+
+        let mut candidates: Vec<Connection> = self
+            .manager
+            .get_connections()?
+            .into_iter()
+            .filter(|c| is_wifi_connection(c) && !is_access_point_connection(c))
+            .filter(|c| {
+                connection_ssid_as_str(c)
+                    .map(|ssid| visible_ssids.contains(ssid))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        let history = &self.reconnect_history;
+        candidates.sort_by(|a, b| {
+            let a_ts = connection_ssid_as_str(a)
+                .and_then(|ssid| history.last_connected(ssid))
+                .unwrap_or(0);
+            let b_ts = connection_ssid_as_str(b)
+                .and_then(|ssid| history.last_connected(ssid))
+                .unwrap_or(0);
+            b_ts.cmp(&a_ts)
+        });
+
+        Ok(candidates)
     }
 }
 
@@ -471,6 +628,19 @@ fn stop_portal_impl(connection: &Connection, config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn confirm_connectivity_and_log(manager: &NetworkManager) {
+    match wait_for_connectivity(manager, 20) {
+        Ok(has_connectivity) => {
+            if has_connectivity {
+                info!("Internet connectivity established");
+            } else {
+                warn!("Cannot establish Internet connectivity");
+            }
+        }
+        Err(err) => error!("Getting Internet connectivity failed: {}", err),
+    }
+}
+
 fn wait_for_connectivity(manager: &NetworkManager, timeout: u64) -> Result<bool> {
     let mut total_time = 0;
 
@@ -582,4 +752,39 @@ fn is_access_point_connection(connection: &Connection) -> bool {
 
 fn is_wifi_connection(connection: &Connection) -> bool {
     connection.settings().kind == "802-11-wireless"
+}
+
+/// Whether this periodic-reconnect tick should force a fresh WiFi scan
+/// regardless of what the cached scan showed. `rescan_every == 0` disables
+/// forced rescanning entirely (always `false`). `tick_count` is expected to
+/// already be incremented (1-based) by the caller before this is checked.
+fn is_forced_rescan_tick(tick_count: u64, rescan_every: u64) -> bool {
+    rescan_every > 0 && tick_count % rescan_every == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rescan_every_zero_never_forces() {
+        assert!(!is_forced_rescan_tick(1, 0));
+        assert!(!is_forced_rescan_tick(2, 0));
+        assert!(!is_forced_rescan_tick(100, 0));
+    }
+
+    #[test]
+    fn rescan_every_one_forces_every_tick() {
+        assert!(is_forced_rescan_tick(1, 1));
+        assert!(is_forced_rescan_tick(2, 1));
+        assert!(is_forced_rescan_tick(3, 1));
+    }
+
+    #[test]
+    fn rescan_every_two_forces_every_other_tick_starting_at_the_second() {
+        assert!(!is_forced_rescan_tick(1, 2));
+        assert!(is_forced_rescan_tick(2, 2));
+        assert!(!is_forced_rescan_tick(3, 2));
+        assert!(is_forced_rescan_tick(4, 2));
+    }
 }

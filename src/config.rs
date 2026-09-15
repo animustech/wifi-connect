@@ -12,6 +12,9 @@ const DEFAULT_SSID: &str = "WiFi Connect";
 const DEFAULT_ACTIVITY_TIMEOUT: &str = "0";
 const DEFAULT_UI_DIRECTORY: &str = "ui";
 const DEFAULT_LISTENING_PORT: &str = "80";
+const DEFAULT_RECONNECT_ENABLED: &str = "true";
+const DEFAULT_RECONNECT_INTERVAL_MINUTES: &str = "30";
+const DEFAULT_RECONNECT_RESCAN_EVERY: &str = "2";
 
 #[derive(Clone)]
 pub struct Config {
@@ -23,6 +26,9 @@ pub struct Config {
     pub listening_port: u16,
     pub activity_timeout: u64,
     pub ui_directory: PathBuf,
+    pub reconnect_enabled: bool,
+    pub reconnect_interval_minutes: u64,
+    pub reconnect_rescan_every: u64,
 }
 
 pub fn get_config() -> Config {
@@ -109,6 +115,37 @@ pub fn get_config() -> Config {
                 ))
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("reconnect-enabled")
+                .long("reconnect-enabled")
+                .value_name("reconnect_enabled")
+                .help(&format!(
+                    "Periodically retry saved WiFi networks in range while the captive portal is active (true/false) (default: {})",
+                    DEFAULT_RECONNECT_ENABLED
+                ))
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("reconnect-interval-minutes")
+                .long("reconnect-interval-minutes")
+                .value_name("reconnect_interval_minutes")
+                .help(&format!(
+                    "Minutes between periodic reconnect attempts (default: {})",
+                    DEFAULT_RECONNECT_INTERVAL_MINUTES
+                ))
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("reconnect-rescan-every")
+                .long("reconnect-rescan-every")
+                .value_name("reconnect_rescan_every")
+                .help(&format!(
+                    "Force a fresh WiFi scan every Nth periodic reconnect attempt, regardless \
+                     of cached candidates; 0 disables forced rescanning (default: {})",
+                    DEFAULT_RECONNECT_RESCAN_EVERY
+                ))
+                .takes_value(true),
+        )
         .get_matches();
 
     let interface: Option<String> = matches.value_of("portal-interface").map_or_else(
@@ -157,6 +194,32 @@ pub fn get_config() -> Config {
 
     let ui_directory = get_ui_directory(matches.value_of("ui-directory"));
 
+    let reconnect_enabled = bool::from_str(&matches.value_of("reconnect-enabled").map_or_else(
+        || env::var("RECONNECT_ENABLED").unwrap_or_else(|_| DEFAULT_RECONNECT_ENABLED.to_string()),
+        String::from,
+    ))
+    .expect("Cannot parse reconnect enabled flag");
+
+    let reconnect_interval_minutes =
+        u64::from_str(&matches.value_of("reconnect-interval-minutes").map_or_else(
+            || {
+                env::var("RECONNECT_INTERVAL_MINUTES")
+                    .unwrap_or_else(|_| DEFAULT_RECONNECT_INTERVAL_MINUTES.to_string())
+            },
+            String::from,
+        ))
+        .expect("Cannot parse reconnect interval minutes");
+
+    let reconnect_rescan_every =
+        u64::from_str(&matches.value_of("reconnect-rescan-every").map_or_else(
+            || {
+                env::var("RECONNECT_RESCAN_EVERY")
+                    .unwrap_or_else(|_| DEFAULT_RECONNECT_RESCAN_EVERY.to_string())
+            },
+            String::from,
+        ))
+        .expect("Cannot parse reconnect rescan every");
+
     Config {
         interface,
         ssid,
@@ -166,6 +229,9 @@ pub fn get_config() -> Config {
         listening_port,
         activity_timeout,
         ui_directory,
+        reconnect_enabled,
+        reconnect_interval_minutes,
+        reconnect_rescan_every,
     }
 }
 

@@ -13,7 +13,7 @@ const DEFAULT_ACTIVITY_TIMEOUT: &str = "0";
 const DEFAULT_UI_DIRECTORY: &str = "ui";
 const DEFAULT_LISTENING_PORT: &str = "80";
 const DEFAULT_RECONNECT_ENABLED: &str = "true";
-const DEFAULT_RECONNECT_INTERVAL_MINUTES: &str = "30";
+const DEFAULT_RECONNECT_INTERVAL_MINUTES: &str = "15";
 const DEFAULT_RECONNECT_RESCAN_EVERY: &str = "2";
 
 #[derive(Clone)]

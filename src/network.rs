@@ -65,7 +65,7 @@ impl NetworkCommandHandler {
 
         let device = find_device(&manager, &config.interface)?;
 
-        let access_points = get_access_points(&device)?;
+        let access_points = get_access_points(&device, &config.ssid)?;
 
         let portal_connection = Some(create_portal(&device, config)?);
 
@@ -268,7 +268,7 @@ impl NetworkCommandHandler {
 
         self.tear_down_portal_if_up()?;
 
-        self.access_points = get_access_points(&self.device)?;
+        self.access_points = get_access_points(&self.device, &self.config.ssid)?;
 
         if let Some(access_point) = find_access_point(&self.access_points, ssid) {
             let wifi_device = self.device.as_wifi_device().unwrap();
@@ -303,7 +303,7 @@ impl NetworkCommandHandler {
             }
         }
 
-        self.access_points = get_access_points(&self.device)?;
+        self.access_points = get_access_points(&self.device, &self.config.ssid)?;
 
         self.portal_connection = Some(create_portal(&self.device, &self.config)?);
 
@@ -343,7 +343,7 @@ impl NetworkCommandHandler {
             );
 
             self.tear_down_portal_if_up()?;
-            self.access_points = get_access_points(&self.device)?;
+            self.access_points = get_access_points(&self.device, &self.config.ssid)?;
         }
 
         let candidates = self.get_reconnect_candidates()?;
@@ -393,7 +393,7 @@ impl NetworkCommandHandler {
             }
         }
 
-        self.access_points = get_access_points(&self.device)?;
+        self.access_points = get_access_points(&self.device, &self.config.ssid)?;
 
         self.portal_connection = Some(create_portal(&self.device, &self.config)?);
 
@@ -522,18 +522,22 @@ fn find_wifi_managed_device(devices: Vec<Device>) -> Result<Option<Device>> {
     Ok(None)
 }
 
-fn get_access_points(device: &Device) -> Result<Vec<AccessPoint>> {
-    get_access_points_impl(device).chain_err(|| ErrorKind::NoAccessPoints)
+fn get_access_points(device: &Device, own_ssid: &str) -> Result<Vec<AccessPoint>> {
+    get_access_points_impl(device, own_ssid).chain_err(|| ErrorKind::NoAccessPoints)
 }
 
-fn get_access_points_impl(device: &Device) -> Result<Vec<AccessPoint>> {
+fn get_access_points_impl(device: &Device, own_ssid: &str) -> Result<Vec<AccessPoint>> {
     let retries_allowed = 10;
     let mut retries = 0;
+
+    let wifi_device = device.as_wifi_device().unwrap();
+    // Actively kick a rescan instead of passively waiting for NM's cache to update -
+    // best-effort, the device may still be leaving AP mode.
+    let _ = wifi_device.request_scan();
 
     // After stopping the hotspot we may have to wait a bit for the list
     // of access points to become available
     while retries < retries_allowed {
-        let wifi_device = device.as_wifi_device().unwrap();
         let mut access_points = wifi_device.get_access_points()?;
 
         access_points.retain(|ap| ap.ssid().as_str().is_ok());
@@ -544,6 +548,10 @@ fn get_access_points_impl(device: &Device) -> Result<Vec<AccessPoint>> {
 
         // Remove access points without SSID (hidden)
         access_points.retain(|ap| !ap.ssid().as_str().unwrap().is_empty());
+
+        // The device's own just-torn-down hotspot can briefly linger in the scan
+        // cache (NM/driver quirk) - don't mistake it for a real neighbor result.
+        access_points.retain(|ap| ap.ssid().as_str().unwrap() != own_ssid);
 
         if !access_points.is_empty() {
             info!(

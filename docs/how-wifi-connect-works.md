@@ -5,17 +5,29 @@ step-by-step captive-portal walkthrough in the main [README](../README.md#how-it
 
 ## Startup
 
-1. `scripts/start.sh` runs first, before the wifi-connect binary itself.
-   - It checks whether a wired (Ethernet) connection is already up (waiting a short,
-     bounded time for one that's still negotiating DHCP). If so, wifi-connect is never
-     launched — a wired connection is treated as "job done," the same as a successful
-     WiFi connection.
-   - Otherwise it falls back to the existing check: if the device already has an active
-     WiFi connection (`iwgetid -r`), wifi-connect is skipped too.
-   - Only if neither check finds an existing connection does it launch the wifi-connect
-     binary.
-   - This decision is made once, at boot. Neither `start.sh` nor the wifi-connect binary
-     re-checks wired state afterward — see "Known limitations" below.
+1. `scripts/start.sh` runs first, and keeps running: it is a supervision loop, not a
+   one-shot boot gate. Every `SUPERVISE_INTERVAL` seconds (default 60) it re-decides
+   whether wifi-connect is needed.
+   - A wired (Ethernet) connection counts as "job done" — wifi-connect is not launched.
+     Interfaces are discriminated by physical backing (`/sys/class/net/<iface>/device`),
+     not by name, because under `network_mode: host` the container also sees `balena0`,
+     `docker0` and `br-*`, all of which carry a global IP with nothing plugged in.
+   - Otherwise it polls for a WiFi association (`iwgetid -r`) for up to
+     `WIFI_CHECK_TIMEOUT` seconds (default 300, sampled every `WIFI_CHECK_INTERVAL`,
+     default 5). That window is also a debounce: a link that drops briefly and returns is
+     not worth raising a captive portal for.
+   - An association to the device's *own* portal SSID (`Loci-AP-<uuid7>`) does not count.
+     `iwgetid -r` reports the hotspot's SSID when `wlan0` is in AP mode, so a portal
+     profile left behind by an ungraceful exit is auto-activated at boot and would
+     otherwise read as healthy. Detecting it skips the wait and relaunches, which deletes
+     the stale profile.
+   - Only if neither check finds a connection does it launch the wifi-connect binary.
+   - wifi-connect **exits as soon as it joins a network** — upstream's design. The loop is
+     what picks supervision back up afterwards. Without it, a device that came up fine and
+     lost its link hours later had no portal process and no reconnect timer left alive;
+     measured on `e3042ef` on 2026-09-15, `wlan0` saw no activity at all for 37 minutes
+     after the link died.
+
 2. wifi-connect itself starts NetworkManager (if needed), finds a managed WiFi device,
    scans for visible access points, and opens the AP/captive portal (`src/network.rs`).
 
@@ -24,7 +36,7 @@ step-by-step captive-portal walkthrough in the main [README](../README.md#how-it
 - A user can connect a phone/laptop to the AP, load the captive portal, pick an SSID and
   enter a passphrase. wifi-connect attempts that connection; on success it exits (the
   device now has WiFi), on failure it recreates the AP for another attempt.
-- Independently, a periodic timer (default: every 30 minutes, configurable via
+- Independently, a periodic timer (default: every 15 minutes, configurable via
   `RECONNECT_ENABLED` / `RECONNECT_INTERVAL_MINUTES` — see
   [command line arguments](./command-line-arguments.md)) tries to reconnect to
   previously-saved WiFi networks that are currently visible in range, trying the
@@ -89,13 +101,13 @@ corrupt cache file is treated as empty history, not a crash.
 
 ## Known limitations
 
-- The wired-connection check in `start.sh` is a one-time, boot-time decision. If wired
-  comes up *after* the AP is already running, the AP is not automatically torn down; if
-  wired goes down *after* wifi-connect has already exited because wired was up at boot,
-  nothing automatically relaunches wifi-connect. Both directions require external
-  supervision (a restart policy, health check, etc.) to notice and react — this is a
-  deliberate simplification, tracked for revisiting later if it proves too coarse in the
-  field.
+- The WiFi check in `start.sh` is bounded. Past `WIFI_CHECK_TIMEOUT` the portal is
+  raised regardless, and recovery from that point is the periodic reconnect's job, not
+  `start.sh`'s.
+- Reaction to a change is bounded by `SUPERVISE_INTERVAL` plus `WIFI_CHECK_TIMEOUT`, so
+  in the worst case a lost link takes ~6 minutes to raise the portal. Wired arriving while
+  the portal is already up is noticed on the next pass, but does not tear the portal down
+  mid-session — wifi-connect is only re-evaluated once it exits.
 - The periodic reconnect feature matches saved networks against the last scan wifi-connect
   took. Most ticks reuse that cached scan; every `RECONNECT_RESCAN_EVERY`th tick forces a
   fresh one (see above). So a network that comes back into range can take up to

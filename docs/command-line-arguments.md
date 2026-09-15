@@ -70,7 +70,7 @@ Command line options have environment variable counterpart. If both a command li
 
     Minutes between periodic reconnect attempts
 
-    Default: _30_
+    Default: _15_
 
 *   **--reconnect-rescan-every** reconnect_rescan_every, **$RECONNECT_RESCAN_EVERY**
 

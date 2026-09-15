@@ -11,7 +11,9 @@ export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/host/run/dbus/system_bus_socket
 # plugged in, are not mistaken for a wired connection.
 wired_connected() {
     local iface_path iface
-    for iface_path in /sys/class/net/*/; do
+    # SYSFS_ROOT is overridable so the decision logic can be exercised against a
+    # fixture tree - see tools/test/. It is never set in production.
+    for iface_path in "${SYSFS_ROOT:-/sys/class/net}"/*/; do
         iface="$(basename "$iface_path")"
         # Physical NICs only. Bridges (balena0/supervisor0/docker0/br-*), veth,
         # tun (resin-vpn) and lo have no backing device symlink.
@@ -54,7 +56,7 @@ connected() {
 # Wired interfaces typically finish link negotiation and DHCP faster than WiFi, so a
 # short bounded wait here is enough to avoid a boot-time race against a plugged-in
 # cable that just hasn't finished getting an address yet.
-WIRED_CHECK_TIMEOUT=10
+WIRED_CHECK_TIMEOUT="${WIRED_CHECK_TIMEOUT:-10}"
 elapsed=0
 while ! wired_connected && [ "$elapsed" -lt "$WIRED_CHECK_TIMEOUT" ]; do
     sleep 1
@@ -64,7 +66,7 @@ done
 # How long to let an association complete before surrendering wlan0 to the portal.
 # Doubles as a debounce: a link that drops briefly and comes back is not worth
 # raising a captive portal for.
-WIFI_CHECK_TIMEOUT="${WIFI_CHECK_TIMEOUT:-300}"
+WIFI_CHECK_TIMEOUT="${WIFI_CHECK_TIMEOUT:-60}"
 WIFI_CHECK_INTERVAL="${WIFI_CHECK_INTERVAL:-5}"
 # How often to re-examine the link while it is healthy.
 SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-60}"
@@ -80,8 +82,15 @@ SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-60}"
 #
 # Re-deciding on an interval closes that. Both directions are covered: wired
 # arriving later is noticed, and WiFi lost later is noticed.
+# MAX_PASSES bounds the loop so tests terminate. Unset in production, where the
+# loop must run for the life of the container.
+passes=0
 last_state=""
 while true; do
+    passes=$((passes + 1))
+    if [ -n "${MAX_PASSES:-}" ] && [ "$passes" -gt "$MAX_PASSES" ]; then
+        break
+    fi
     if connected; then
         if [ "$last_state" != "connected" ]; then
             if wired_connected; then
@@ -122,7 +131,8 @@ while true; do
     printf 'No connection after %ss - starting WiFi Connect\n' "$elapsed"
     # Blocks until a network is joined through the portal, then exits. The loop
     # picks supervision back up from there.
-    ./wifi-connect -s "$PORTAL_SSID" -p "!${BALENA_DEVICE_UUID:0:7}#"
+    "${WIFI_CONNECT_BIN:-./wifi-connect}" \
+        -s "$PORTAL_SSID" -p "!${BALENA_DEVICE_UUID:0:7}#"
     printf 'WiFi Connect exited - resuming supervision\n'
     last_state=""
     sleep "$SUPERVISE_INTERVAL"

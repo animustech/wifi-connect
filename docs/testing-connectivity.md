@@ -103,7 +103,27 @@ wifi-connect entirely. So the container is given a `SYSFS_ROOT` view containing 
 radio. Everything else is real: NetworkManager, D-Bus, wpa_supplicant, the radio. That the
 rig hit this at all is itself a faithful reproduction of S0 and S12.
 
-Remaining: scenarios beyond S4 are still hand-driven.
+```bash
+limactl shell wifitest sudo /tmp/hwsim/run-scenarios.sh        # all nine
+limactl shell wifitest sudo /tmp/hwsim/run-scenarios.sh s7     # one
+```
+
+Nine scenarios, each asserted rather than eyeballed. Four virtual radios: the device, two
+vessel APs (so ordering can be tested) and a neighbouring Loci unit's portal.
+
+### Traps that cost time, so they are in the scripts
+
+- **`pgrep` is not namespace-aware.** The process table is shared across network namespaces,
+  so `ip netns exec ap2 pgrep -x hostapd` happily finds slot 1's AP. Worse, `pkill -x
+  hostapd` inside one namespace kills every AP on the box. Track pids per slot.
+- **Reloading `mac80211_hwsim` renumbers the phys** — `phy0..3` became `phy2..5`. Resolve
+  `netdev -> phy` at runtime, never hardcode.
+- **A scenario with a syntax error sourced as a pass.** `.` aborts partway, assertions never
+  run, and the failure counter stays at zero. The runner now `bash -n`s every case first; a
+  case that never ran must never read as green.
+- **NetworkManager's scan cache lags a freshly started AP** by several seconds, and `nmcli
+  device wifi connect` fails outright rather than waiting — which looks like a broken AP.
+  Wait for the SSID to be visible, then connect.
 
 ### What it has proven so far
 

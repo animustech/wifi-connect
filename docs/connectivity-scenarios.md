@@ -225,9 +225,16 @@ portal is the only remedy and there is nobody aboard to use it.
 M4 orders candidates most-recently-successful first, from its own cache at
 `/data/reconnect-history.json` — NetworkManager exposes no usable last-connected timestamp.
 
-**Covered.** If the cache is missing or corrupt it is treated as empty history: candidates
-are still tried, just unordered. No credentials live in that file, so losing the volume
-costs ordering, never access.
+**Covered, with a measured limit.** If the cache is missing or corrupt it is treated as
+empty history: candidates are still tried, just unordered. No credentials live in that file,
+so losing the volume costs ordering, never access.
+
+The cache only records connections **wifi-connect itself** made — via the portal or a
+reconnect tick. NetworkManager's own autoconnect, which is how a healthy device connects
+almost every time, is never recorded. A unit that has been online for months therefore has
+an empty cache and arbitrary ordering the first time M4 runs. Found by
+`tools/hwsim/scenarios/s9-ordering.sh`, which originally asserted the documented behaviour
+and failed.
 
 ### S10 — The device's own hotspot pollutes its own scan
 
@@ -331,31 +338,45 @@ it is faster at the common case by three orders of magnitude.
 
 ## What is actually tested
 
-Being precise about this matters more than the headline. Tier 1 is
-`tools/test/run.sh` (12 cases, stubbed tools, no radio); tier 2 is
-`tools/hwsim/scenario-s4.sh` against the real container on virtual radios.
+Tier 1 is `tools/test/run.sh` (12 cases, stubbed tools, no radio, seconds). Tier 2 is
+`tools/hwsim/run-scenarios.sh` (9 scenarios, the real container on virtual radios, minutes).
 
-| Scenario | Tier 1 | Tier 2 | Notes |
-|---|---|---|---|
-| S0 wired | yes | — | both the plain case and the bridges-only field-bricking regression |
-| S1 portal provisioning | partly | — | the join-and-resume branch only; the HTTP portal itself is untested |
-| S2 associated at boot | yes | — | |
-| S3 link lost later | yes | — | plus the brief-flap debounce |
-| S4 stranded, unattended | yes | **yes** | tier 1 covers the decision, tier 2 the real recovery |
-| S5 stale portal AP | yes | — | both branches |
-| S6 associated, no route | **no** | **no** | out of scope here by design |
-| S7 AP rejects association | **no** | **no** | needs hostapd configured to reject |
-| S8 stale credentials | **no** | **no** | not solvable from here anyway |
-| S9 several saved networks | **no** | **no** | reconnect-history ordering is untested |
-| S10 own AP in scan | — | **yes** | asserted inside the S4 run |
-| S11 wired mid-session | partly | — | wired-present case only, not arrival mid-portal |
-| S12 LTE reads as wired | yes | — | documents current behaviour, not a decision |
-| S13 two units in range | **no** | **no** | believed harmless, unverified |
-| S14 repeated resets | **no** | **no** | |
+| Scenario | Tier 1 | Tier 2 |
+|---|---|---|
+| S0 wired, and the bridges-only field-bricking regression | yes | — |
+| S1 operator provisions through the portal | yes | yes (real HTTP: `/networks`, `/connect`) |
+| S2 associated at boot | yes | — |
+| S3 link lost later, and the brief-flap debounce | yes | — |
+| S4 stranded, unattended recovery | yes | yes |
+| S5 stale portal AP, both branches | yes | — |
+| S6 associated with no route | — | yes (characterisation: must do nothing) |
+| S7 AP present but rejecting | — | yes |
+| S8 stale credentials | — | yes (proves the limit, not a fix) |
+| S9 reconnect ordering | — | yes |
+| S10 own AP in scan | — | yes (asserted inside S4 and S13) |
+| S11 wired arriving mid-portal | yes | yes |
+| S12 LTE reads as wired | yes | — |
+| S13 two Loci units in range | — | yes |
+| S14 repeated restarts | — | yes |
 
-So: **six scenarios have no test at all**, and two more are only partly covered. The gaps
-that would most repay work are S7 (the actual `be8bdb2` failure) and S9 (ordering, which is
-pure logic and cheap to test).
+Every scenario in this document now has at least one test. Two caveats on what that means:
+
+- **S14 restarts the container, not the device.** Kernel and NetworkManager state survive, so
+  it proves service-level behaviour only — not a power cut.
+- **S7 approximates.** `status_code=16` in the field was an AP that did not answer at all;
+  the rig reproduces it with a hostapd MAC deny list, which is a deliberate refusal. Same
+  observable, different cause.
+
+### What writing the tests found
+
+- **`WIRED_CHECK_TIMEOUT` was hardcoded at 10 s**, so every boot burned ten seconds in the
+  wired wait before the WiFi check began.
+- **The reconnect-history cache only records connections wifi-connect made itself** — through
+  the portal, or through a reconnect tick. A connection NetworkManager makes on its own never
+  appears, and NM autoconnect is the normal case on a healthy device. So on a unit that has
+  simply been online for months the cache is empty and M4's ordering is arbitrary. It still
+  tries every candidate, so this costs time, not recovery — but "most-recently-connected
+  first" overstates what happens in practice.
 
 ## Open questions
 

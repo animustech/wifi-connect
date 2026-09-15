@@ -170,6 +170,8 @@ run_start_sh() {
         WIFI_CHECK_TIMEOUT="${WIFI_CHECK_TIMEOUT:-2}" \
         WIFI_CHECK_INTERVAL="${WIFI_CHECK_INTERVAL:-1}" \
         SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-1}" \
+        PORTAL_RETRY_GAP="${PORTAL_RETRY_GAP:-1}" \
+        ACTIVITY_TIMEOUT="${ACTIVITY_TIMEOUT:-0}" \
         "${extra_env[@]}" \
         bash "$START_SH" > "$TMP/out.log" 2>&1
 }

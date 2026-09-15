@@ -37,7 +37,8 @@ loop: it re-decides every `SUPERVISE_INTERVAL` whether the binary needs launchin
 | `RECONNECT_ENABLED` | true | M4 on/off |
 | `RECONNECT_INTERVAL_MINUTES` | 15 | M4 tick |
 | `RECONNECT_RESCAN_EVERY` | 2 | Force a fresh scan every Nth tick |
-| `ACTIVITY_TIMEOUT` | 0 (disabled) | If set, the portal exits after N seconds with no visitor |
+| `ACTIVITY_TIMEOUT` | 300 s | The portal gives up if nobody opens it in that time, handing the radio back |
+| `PORTAL_RETRY_GAP` | 900 s | After it gives up, how long the radio is left to NetworkManager before offering the portal again |
 
 All are environment variables, so all can be changed on a balena fleet **without a
 release**.
@@ -294,39 +295,33 @@ answer to "how long should we wait for an absent AP to come back" — that is a 
 question with a different answer, and loading both onto one knob is how it briefly ended up
 at 300 s.
 
-**Proposed, not yet implemented.** `ACTIVITY_TIMEOUT` is the elegant answer and most of
-what is needed: the portal exits if no visitor arrives (confirmed in `src/network.rs` —
-`NetworkCommand::Timeout` returns when `!self.activated`), our `stop()` deletes the portal
-profile on the way out, and the radio goes back to NetworkManager unaided. That makes
-raising the portal cheap and reversible instead of a seizure.
+**Implemented.** `ACTIVITY_TIMEOUT` defaults to 120 s here, against upstream's 0: the portal
+gives up if nobody opens it (`src/network.rs` — `NetworkCommand::Timeout` returns when
+`!self.activated`, and `run()` calls `stop()` unconditionally, which deletes the portal
+profile and releases the radio). `PORTAL_RETRY_GAP` then leaves the radio alone for 15
+minutes before offering the portal again — without it the loop would simply re-raise the
+portal a minute later and the timeout would buy nothing.
 
-It needs one companion: a gap between unattended portal offers, so the loop does not simply
-re-raise the portal a minute later. A **fixed** gap, not exponential backoff — the backoff
-buys little over a sensible constant and adds a state machine nobody wants to reason about
-at 3am.
+A **fixed** gap, not exponential backoff: the backoff buys little over a sensible constant
+and adds a state machine nobody wants to reason about at 3am.
 
-Suggested: `ACTIVITY_TIMEOUT=120` seconds with a ~15 minute gap between offers, giving
-NetworkManager the radio roughly 90% of the time during a long outage. `ACTIVITY_TIMEOUT`
-is an environment variable, so that half can be set on a fleet today with no release.
+Measured on the hwsim rig with an AP that stays down, sampling whether `wlan0` is in AP
+mode (compressed timings — the ratio transfers, not the absolute numbers):
 
-Two things to weigh before setting it:
+| | radio held by wifi-connect | available to NetworkManager |
+|---|---|---|
+| upstream default (portal never gives up) | 75% | 25% |
+| 20 s timeout : 60 s gap (1:3) | 34% | 66% |
+| 50 s timeout : 150 s gap (1:3, the shipped ratio) | 27% | 73% |
 
-- **The timer is one-shot, not a rolling idle timer.** `spawn_activity_timeout` sleeps once
-  from process start and then sends `Timeout`, which is ignored if anyone has opened the
-  portal (`self.activated`). So "unattended" means *nobody ever opened the page*.
-  An installer who opens it and walks away does not strand the device, though — M4 is the
-  escape hatch: `NetworkCommand::Reconnect` returns from the run loop when a saved network
-  takes, so the binary exits within one tick and NetworkManager gets the radio back. The
-  portal genuinely persists only when nothing joinable is in range, which is the one case
-  where having it up is correct.
+The shipped 300 s : 900 s is that same 1:3 ratio, so expect roughly **27% held**. Widening
+the gap to 1800 s would land near 14%, at the cost of a longer wait for an installer who
+misses the portal window.
 
-  That narrows what `ACTIVITY_TIMEOUT` buys: not rescuing an abandoned portal session, but
-  handing the radio back to NetworkManager during the stretches when there is nothing to
-  join — which is precisely the disturbance concern below.
-- **It also applies during provisioning (S1).** An installer who takes longer than
-  `ACTIVITY_TIMEOUT` to get their phone out will find the AP gone, and will have to wait
-  out the gap before it returns. That argues for a generous timeout and a short gap on a
-  fleet being installed, and the opposite on vessels already at sea.
+The provisioning trade-off is real: an installer who takes longer than `ACTIVITY_TIMEOUT`
+to get their phone out finds the AP gone and must wait out the gap. For a fleet being
+installed, raise `ACTIVITY_TIMEOUT` and drop `PORTAL_RETRY_GAP`; both are environment
+variables, so that is a fleet setting, not a release.
 
 One thing to keep in view: M4 runs *only* while the binary runs, so portal-up and
 NetworkManager-in-control are mutually exclusive recovery modes. Favour NetworkManager —
@@ -334,15 +329,45 @@ it is faster at the common case by three orders of magnitude.
 
 ---
 
+## What is actually tested
+
+Being precise about this matters more than the headline. Tier 1 is
+`tools/test/run.sh` (12 cases, stubbed tools, no radio); tier 2 is
+`tools/hwsim/scenario-s4.sh` against the real container on virtual radios.
+
+| Scenario | Tier 1 | Tier 2 | Notes |
+|---|---|---|---|
+| S0 wired | yes | — | both the plain case and the bridges-only field-bricking regression |
+| S1 portal provisioning | partly | — | the join-and-resume branch only; the HTTP portal itself is untested |
+| S2 associated at boot | yes | — | |
+| S3 link lost later | yes | — | plus the brief-flap debounce |
+| S4 stranded, unattended | yes | **yes** | tier 1 covers the decision, tier 2 the real recovery |
+| S5 stale portal AP | yes | — | both branches |
+| S6 associated, no route | **no** | **no** | out of scope here by design |
+| S7 AP rejects association | **no** | **no** | needs hostapd configured to reject |
+| S8 stale credentials | **no** | **no** | not solvable from here anyway |
+| S9 several saved networks | **no** | **no** | reconnect-history ordering is untested |
+| S10 own AP in scan | — | **yes** | asserted inside the S4 run |
+| S11 wired mid-session | partly | — | wired-present case only, not arrival mid-portal |
+| S12 LTE reads as wired | yes | — | documents current behaviour, not a decision |
+| S13 two units in range | **no** | **no** | believed harmless, unverified |
+| S14 repeated resets | **no** | **no** | |
+
+So: **six scenarios have no test at all**, and two more are only partly covered. The gaps
+that would most repay work are S7 (the actual `be8bdb2` failure) and S9 (ordering, which is
+pure logic and cheap to test).
+
 ## Open questions
 
 1. **S0 did not behave as expected during testing on 2026-09-15.** Undiagnosed.
 2. ~~**S4 has never been observed working on hardware.**~~ Closed 2026-09-15 — proven in
    simulation, though still not on a device.
 3. **S12 is unverified.** Does `wwan0` really read as wired?
-4. **Does the supervision loop disturb NetworkManager in practice?** The tell is repeated
-   `Starting WiFi Connect` / `WiFi Connect exited` pairs a few minutes apart.
-5. **`ACTIVITY_TIMEOUT` + backoff** — agreed in principle, not built.
+4. **Does the supervision loop disturb NetworkManager in practice?** Now bounded rather
+   than unknown — see the duty-cycle measurement above — but still unobserved on a device.
+   The tell in the field is repeated `Starting WiFi Connect` / `gave up` pairs.
+5. ~~**`ACTIVITY_TIMEOUT` + backoff**~~ Closed 2026-09-15 — implemented as a fixed gap and
+   measured.
 
 ## Testing these
 

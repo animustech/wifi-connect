@@ -71,6 +71,21 @@ WIFI_CHECK_INTERVAL="${WIFI_CHECK_INTERVAL:-5}"
 # How often to re-examine the link while it is healthy.
 SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-60}"
 
+# How long the portal waits for a human to open it before giving up. Read by the
+# binary itself, not by this script, so it only needs exporting.
+#
+# Upstream defaults this to 0, meaning the portal stays up forever. On a vessel
+# there is nobody to open it, and holding wlan0 is actively harmful: measured on
+# the hwsim rig, NetworkManager reacquires a returning AP in 5-10 s, while our own
+# reconnect tick is minutes. Camping on the radio makes recovery slower, not
+# faster. See docs/connectivity-scenarios.md.
+export ACTIVITY_TIMEOUT="${ACTIVITY_TIMEOUT:-300}"
+
+# After an unattended portal gives up, how long to leave the radio alone before
+# offering it again. Without this the loop would simply re-raise the portal a
+# minute later and the timeout would buy nothing.
+PORTAL_RETRY_GAP="${PORTAL_RETRY_GAP:-900}"
+
 # Supervision loop, not a one-shot boot gate.
 #
 # wifi-connect exits as soon as it successfully joins a network - that is
@@ -129,11 +144,22 @@ while true; do
     fi
 
     printf 'No connection after %ss - starting WiFi Connect\n' "$elapsed"
-    # Blocks until a network is joined through the portal, then exits. The loop
-    # picks supervision back up from there.
+    # Blocks until a network is joined - through the portal, or by the binary's
+    # own periodic reconnect - or until ACTIVITY_TIMEOUT expires with no visitor.
     "${WIFI_CONNECT_BIN:-./wifi-connect}" \
         -s "$PORTAL_SSID" -p "!${BALENA_DEVICE_UUID:0:7}#"
-    printf 'WiFi Connect exited - resuming supervision\n'
     last_state=""
-    sleep "$SUPERVISE_INTERVAL"
+
+    if connected; then
+        printf 'WiFi Connect joined a network - resuming supervision\n'
+        sleep "$SUPERVISE_INTERVAL"
+    else
+        # It gave up without joining anything. Hand the radio back to
+        # NetworkManager for a while instead of immediately re-raising the portal:
+        # NM is far better at reacquiring an AP that returns, and it cannot do
+        # that while we hold the interface.
+        printf 'WiFi Connect gave up - leaving the radio to NetworkManager for %ss\n' \
+            "$PORTAL_RETRY_GAP"
+        sleep "$PORTAL_RETRY_GAP"
+    fi
 done

@@ -59,3 +59,21 @@ Command line options have environment variable counterpart. If both a command li
     Web UI directory location
 
     Default: _ui_
+
+*   **--reconnect-enabled** reconnect_enabled, **$RECONNECT_ENABLED**
+
+    Periodically retry saved WiFi networks in range while the captive portal is active (true/false)
+
+    Default: _true_
+
+*   **--reconnect-interval-minutes** reconnect_interval_minutes, **$RECONNECT_INTERVAL_MINUTES**
+
+    Minutes between periodic reconnect attempts
+
+    Default: _30_
+
+*   **--reconnect-rescan-every** reconnect_rescan_every, **$RECONNECT_RESCAN_EVERY**
+
+    Force a fresh WiFi scan every Nth periodic reconnect attempt, regardless of cached candidates; 0 disables forced rescanning
+
+    Default: _2_

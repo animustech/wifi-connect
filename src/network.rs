@@ -235,8 +235,19 @@ impl NetworkCommandHandler {
     fn stop(&mut self, exit_tx: &Sender<ExitResult>, result: ExitResult) {
         let _ = stop_dnsmasq(&mut self.dnsmasq);
 
+        // On exit, delete the AP profile directly instead of going through
+        // stop_portal_impl's deactivate()+wait. That wait is bounded by the
+        // NetworkManager method timeout, which on a slow device can outlast the
+        // container's SIGKILL grace period - the process is then killed mid-cleanup
+        // and the profile (and the radio's AP state) is left behind for the next
+        // boot to trip over. Deleting the profile directly is fast, and NM tears
+        // down the active connection along with it.
+        //
+        // The live teardown path (tear_down_portal_if_up) still needs
+        // deactivate()+wait: it keeps running afterwards, so there is no SIGKILL
+        // race there and correctness matters more than speed.
         if let Some(ref connection) = self.portal_connection {
-            let _ = stop_portal_impl(connection, &self.config);
+            let _ = connection.delete();
         }
 
         let _ = exit_tx.send(result);

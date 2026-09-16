@@ -247,6 +247,20 @@ physically attends it. Same strand, different door.
 skipped (a radio serving our own AP is not about to associate to anything), and the binary
 is relaunched — which deletes the leftover profile when it creates its own.
 
+**But the premise is driver-dependent, and does not hold on the Pi 5.** Measured on
+`f5bffbf` (balenaOS 7.4.0) 2026-09-16 with `wlan0` genuinely in AP mode and the profile
+present: `iwgetid -r` returns **empty**, not the hotspot SSID. So on this hardware the bug
+cannot occur — `wifi_connected()` already fails on the empty-SSID check — and the guard
+never fires, which also means the `Stale portal AP ... not waiting` shortcut never fires and
+the device pays the full `WIFI_CHECK_TIMEOUT` wait instead. Harmless, and the guard is worth
+keeping for drivers that do report it, but do not expect to see that log line on a Pi 5.
+
+**The recovery itself is proven on hardware.** Same run: a container killed while the portal
+was up left `Loci-AP-f5bffbf` active and `wlan0` in AP mode; on the next supervision pass the
+device treated itself as disconnected, relaunched the binary, logged
+`Deleting already created by WiFi Connect access point connection profile` and raised a fresh
+portal. No human, no reboot.
+
 ### S6 — Associated, but no route to anywhere
 
 The vessel AP answers, WPA completes, DHCP grants a lease — and the upstream VSAT link is

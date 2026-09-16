@@ -82,8 +82,39 @@ question.
 
 ```bash
 tools/hwsim/vm-up.sh                      # create + provision the VM (idempotent)
+limactl shell wifitest sudo /tmp/hwsim/ap.sh setup     # namespaces + radio placement
 limactl shell wifitest sudo /tmp/hwsim/ap.sh up|down|status
 limactl shell wifitest sudo /tmp/hwsim/baseline.sh
+```
+
+**`vm-up.sh` does not put the rig or the image in the VM** — it only creates and
+provisions the machine. Lima mounts `~` but this repo lives outside it, so both have to be
+copied in, and a VM reboot wipes `/tmp`. **Always re-run `vm-up.sh` after a VM reboot before
+copying anything**: it is what guarantees four `mac80211_hwsim` radios. Then re-do these two:
+
+```bash
+# the rig -> /tmp/hwsim   (--no-xattrs keeps macOS provenance attrs out of the tar)
+tar c --no-xattrs tools/hwsim | limactl shell wifitest sudo tar x -C /tmp --strip-components=1
+limactl shell wifitest sudo sh -c 'chmod +x /tmp/hwsim/*.sh'
+
+# the source -> /tmp/wcsrc, and the image the scenarios run ($IMAGE, wifi-connect:test)
+limactl shell wifitest sudo rm -rf /tmp/wcsrc && limactl shell wifitest sudo mkdir -p /tmp/wcsrc
+tar c --no-xattrs --exclude=.git --exclude=target --exclude=.worktrees . \
+  | limactl shell wifitest sudo tar x -C /tmp/wcsrc
+limactl shell wifitest sudo sh -c \
+  'cd /tmp/wcsrc && cp Dockerfile.template Dockerfile && docker build -t wifi-connect:test .'
+```
+
+`Dockerfile.template` is copied to `Dockerfile` because it is a plain Dockerfile here — it
+carries no balena `%%` substitutions. Docker's layer cache survives the VM reboot, so a
+rebuild after a source change is seconds unless the Rust dependencies moved.
+
+**The rig needs four radios**: `wlan0` is the device, and `ap.sh` claims one each for slots
+`1`, `2` and `peer`. A short rig fails as `Cannot find device "wlan1"` during a scenario's
+*setup*, which reads as a scenario failure but is not one. Check with
+
+```bash
+limactl shell wifitest sudo sh -c 'ls -d /sys/class/ieee80211/phy* | wc -l'   # must be 4
 ```
 
 **Built and working:** two virtual radios, a WPA2 AP with DHCP in its own network

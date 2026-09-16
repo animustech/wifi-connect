@@ -136,7 +136,23 @@ poll checks before sleeping, so there is no fixed delay), the binary is never la
 
 The link drops. M2 notices within `SUPERVISE_INTERVAL`, waits `WIFI_CHECK_TIMEOUT` for it
 to return — NetworkManager gets that window uninterrupted — and if it does not, launches
-the binary so M3/M4 come back.
+the binary so M3 comes back.
+
+**The debounce, measured on `f5bffbf` 2026-09-16.** A deliberate short outage:
+
+```
+08:32:44.086  Connection lost - waiting up to 60s for it to return
+08:33:04.177  WiFi connected to #Skyroam_t0n
+```
+
+20.1 s, absorbed whole. No portal, no AP raised, `wlan0` never left station mode —
+NetworkManager reassociated in 4.6 s (`disconnected -> prepare` 08:32:57, DHCP lease and
+`Activation: successful` 08:33:01) and `start.sh` stayed out of the way.
+
+**So an outage shorter than `WIFI_CHECK_TIMEOUT` costs nothing.** Longer than that and you
+pay the full portal cycle: up to `ACTIVITY_TIMEOUT` before the give-up, then seconds to
+recover. Note the detection lag — the drop can precede the `Connection lost` line by up to
+`SUPERVISE_INTERVAL`, so the real tolerated outage is 60-120 s, not a flat 60.
 
 **Partly covered before, fully covered as of `1.2.0-wifi-connect.2`.**
 
@@ -179,7 +195,34 @@ anything:
 ```
 
 **13.1 seconds** from give-up to associated — roughly 70x faster than M4's 900 s tick would
-have been, which is the entire reason `ACTIVITY_TIMEOUT` exists.
+have been, which is the entire reason `ACTIVITY_TIMEOUT` exists. (The AP was already back
+in that run, so this measures the give-up, not the reacquire.)
+
+**And the true vessel case** — same device, same day, a 7.5-minute outage with the AP
+absent across the whole give-up:
+
+```
+08:43:04.305  Connection lost - waiting up to 60s for it to return
+08:44:13.486  Starting HTTP server on 192.168.42.1:80
+08:49:13.486  Timeout reached. Exiting...                  <- 299.999825 s
+08:49:13.974  NM: wlan0 disconnected - radio handed back
+     (7 m 32 s: AP absent, radio free, NetworkManager watching, start.sh asleep)
+08:56:45.525  NM: policy: auto-activating connection '#Skyroam_t0n'
+08:56:50.077  NM: Activation: successful, device activated
+```
+
+**4.6 s** from the AP returning to associated with a lease. The device spent the outage in
+the best possible state: radio released, nothing holding it. At upstream's
+`ACTIVITY_TIMEOUT=0` it would still have been sitting in AP mode, dark, waiting for someone
+to walk up with a phone — the failure that took a production vessel dark three times in
+twelve days.
+
+`start.sh` logs nothing between the give-up and the end of `PORTAL_RETRY_GAP`, so **silence
+there is the design working, not a hang**. The reconnect evidence lives only in the
+NetworkManager journal.
+
+One trap in the log above: the binary's `Access points:` line still listed the vessel SSID a
+minute after the AP was switched off. That is NetworkManager's scan cache, not ground truth.
 
 **Do not measure this from balenaCloud.** That same device only flipped `IS ONLINE: true` at
 08:13:23, nearly seven minutes after it was actually associated. The lag is the VPN

@@ -46,12 +46,23 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     network-manager hostapd wpasupplicant dnsmasq-base iw wireless-tools docker.io
 
 echo "==> virtual radios"
-lsmod | grep -q mac80211_hwsim || modprobe mac80211_hwsim radios=2
-ip netns list | grep -qx ap || ip netns add ap
-# phy1 becomes the AP; moving it into the netns also hides it from NM.
-if [ -d /sys/class/ieee80211/phy1 ]; then
-    iw phy phy1 set netns name ap
+# Four radios, not two: wlan0 is the device, and ap.sh needs one each for slots
+# 1 (vessel AP), 2 (second AP, S9 ordering) and peer (another Loci unit, S13).
+# Provisioning two was enough for the original single-AP rig and silently starves
+# every scenario added since - the failure surfaces as `Cannot find device wlan1`.
+#
+# Count the radios rather than just checking the module is loaded: a module left
+# over from an earlier layout is loaded but wrong, and `lsmod | grep -q` calls that
+# good. Reloading renumbers the phys, which is why nothing here may hardcode one.
+HWSIM_RADIOS=4
+if [ "$(ls -d /sys/class/ieee80211/phy* 2>/dev/null | wc -l)" -ne "$HWSIM_RADIOS" ]; then
+    modprobe -r mac80211_hwsim 2>/dev/null || true
+    modprobe mac80211_hwsim "radios=$HWSIM_RADIOS"
 fi
+# Radio placement and namespaces belong to `ap.sh setup` (ap1/ap2/peer). The old
+# single `ap` netns here used to move phy1 out of the host namespace, which took
+# the radio ap.sh was about to look for; drop it if an earlier run left it behind.
+ip netns list 2>/dev/null | grep -qx ap && ip netns delete ap
 
 echo "==> done"
 ip netns exec ap ip -br link | grep wlan || true

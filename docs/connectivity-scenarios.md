@@ -17,7 +17,7 @@ There are four, and confusing them is what made this hard to reason about.
 | M1 | Wired-connection check | `scripts/start.sh` | Every supervision pass |
 | M2 | WiFi association poll | `scripts/start.sh` | Every supervision pass |
 | M3 | Captive portal | `wifi-connect` binary | Only while the binary runs |
-| M4 | Periodic reconnect | `wifi-connect` binary (`src/network.rs`) | Only while the binary runs |
+| M4 | Periodic reconnect | `wifi-connect` binary (`src/network.rs`) | Never, at shipped settings — see S4 |
 
 **The single most important fact:** M3 and M4 exist only while the `wifi-connect` process
 is alive, and that process **exits the moment it successfully joins a network**. That is
@@ -35,7 +35,7 @@ loop: it re-decides every `SUPERVISE_INTERVAL` whether the binary needs launchin
 | `WIFI_CHECK_TIMEOUT` | 60 s | How long to let an in-flight association complete before raising the portal |
 | `WIFI_CHECK_INTERVAL` | 5 s | Sampling rate within that window |
 | `RECONNECT_ENABLED` | true | M4 on/off |
-| `RECONNECT_INTERVAL_MINUTES` | 15 | M4 tick |
+| `RECONNECT_INTERVAL_MINUTES` | 15 | M4 tick — longer than `ACTIVITY_TIMEOUT`, so M4 never fires |
 | `RECONNECT_RESCAN_EVERY` | 2 | Force a fresh scan every Nth tick |
 | `ACTIVITY_TIMEOUT` | 300 s | The portal gives up if nobody opens it in that time, handing the radio back |
 | `PORTAL_RETRY_GAP` | 900 s | After it gives up, how long the radio is left to NetworkManager before offering the portal again |
@@ -149,27 +149,47 @@ NetworkManager had not recovered it, nothing would have.
 
 ### S4 — Boots with the network absent, nobody attends the portal
 
-M3 raises the AP. M4 then retries saved networks every `RECONNECT_INTERVAL_MINUTES`,
-forcing a fresh scan every `RECONNECT_RESCAN_EVERY` ticks so a network that was invisible
-at the moment of boot is eventually noticed.
+M3 raises the AP. What then rescues the device is **not** M4.
 
-**Covered and now proven** — `tools/hwsim/scenario-s4.sh`, 2026-09-15. Previously every
-recovery seen in the field came from a human opening the portal before the first tick
-fired, so this was designed-but-unobserved. The simulated rig staged it end to end: portal
-up with the AP gone, AP returns, nobody touches anything, and the device reconnects on a
-forced-rescan tick:
+**M4 cannot fire at shipped settings.** `spawn_activity_timeout` is a one-shot
+`sleep(ACTIVITY_TIMEOUT)`, and `spawn_periodic_reconnect` is `loop { sleep(interval); ... }`
+— it sleeps *before* its first tick. So M4 only ever runs when
 
 ```
-Forced periodic rescan (every 2 ticks)
-Stopping access point 'Loci-AP-e3042ef'...
-Access points: ["Deep Runner-IOT"]
-Periodic reconnect: attempting 1 saved network(s) in range
-Internet connectivity established
-WiFi Connect exited - resuming supervision
+ACTIVITY_TIMEOUT > RECONNECT_INTERVAL_MINUTES x 60      (or ACTIVITY_TIMEOUT = 0)
 ```
 
-Recovery is bounded by the tick, so at production settings (15 min, rescan every 2nd tick)
-the worst case is ~30 minutes.
+Shipped defaults are 300 s against 900 s, so the portal always exits first and **M4 never
+ticks in production**. It is vestigial rather than broken: `ACTIVITY_TIMEOUT` arrived with
+the duty-cycle work, after M4 was written, and superseded it.
+
+**What actually recovers the device** is the give-up path. The portal exits at
+`ACTIVITY_TIMEOUT`, deletes its own profile, and hands `wlan0` back to NetworkManager,
+which auto-activates the saved vessel profile.
+
+**Measured in the field** — `f5bffbf`, 2026-09-16, production settings, nobody touching
+anything:
+
+```
+08:01:17.780  Starting HTTP server on 192.168.42.1:80
+08:06:17.780  Timeout reached. Exiting...                  <- exactly 300.000159 s
+08:06:17.782  NM: activated -> deactivating (reason 'connection-removed')
+08:06:25.380  NM: policy: auto-activating connection '#Skyroam_t0n'
+08:06:30.922  NM: Activation: successful, device activated
+```
+
+**13.1 seconds** from give-up to associated — roughly 70x faster than M4's 900 s tick would
+have been, which is the entire reason `ACTIVITY_TIMEOUT` exists.
+
+**Do not measure this from balenaCloud.** That same device only flipped `IS ONLINE: true` at
+08:13:23, nearly seven minutes after it was actually associated. The lag is the VPN
+reconnecting, not the network. Read the NetworkManager journal instead — measuring from the
+dashboard makes a 13-second recovery look like a 7-minute one.
+
+**Covered by `tools/hwsim/scenarios/s4-stranded-recovers.sh`** at production ratios. M4's
+legacy behaviour is kept under test separately, in `s4b-m4-legacy-reconnect.sh`, which has
+to force `ACTIVITY_TIMEOUT=0` to reach it at all — that override is the proof M4 is
+unreachable otherwise.
 
 ### S5 — A stale portal profile survives an ungraceful exit
 
@@ -244,7 +264,7 @@ non-empty, so the scan can "succeed" containing nothing but the device's own AP 
 candidate matches, the portal goes straight back up, and the next tick repeats it forever.
 
 **Covered and proven.** The portal SSID is filtered out of scan results and a scan is
-requested actively rather than waiting for the cache to refresh. `scenario-s4.sh` asserts
+requested actively rather than waiting for the cache to refresh. Both S4 scenarios assert
 it directly: the device's own AP never appears in its own `Access points:` line, measured
 seconds after tearing that AP down.
 

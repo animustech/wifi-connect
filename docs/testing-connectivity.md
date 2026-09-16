@@ -93,7 +93,8 @@ The real container runs against it — the image built from this repo, with host
 the system D-Bus socket and a `/data` volume, exactly as the compose service has it.
 
 ```bash
-limactl shell wifitest sudo /tmp/hwsim/scenario-s4.sh
+limactl shell wifitest sudo /tmp/hwsim/run-scenarios.sh        # all
+limactl shell wifitest sudo /tmp/hwsim/run-scenarios.sh s4     # just the S4 pair
 ```
 
 **One caveat about the rig, worth understanding before trusting a result.** A vessel Pi has
@@ -128,10 +129,20 @@ vessel APs (so ordering can be tested) and a neighbouring Loci unit's portal.
 ### What it has proven so far
 
 **S4, the scenario that could never be observed on hardware.** A device stranded with its
-portal up, the vessel AP returning, nobody touching anything — it recovers on a
-forced-rescan tick, and the binary exits so `start.sh` resumes supervision. Asserted, not
-eyeballed: the run fails unless the log shows the forced rescan, M4's attempt and the
-binary's exit. It also asserts S10 — the device's own AP never appears in its own scan.
+portal up, the vessel AP returning, nobody touching anything — it recovers.
+
+Note *how* it recovers, because the rig originally got this wrong. At production settings
+the portal's `ACTIVITY_TIMEOUT` (300 s) expires long before M4's first tick (900 s), so the
+portal gives up, deletes its profile and hands `wlan0` back, and **NetworkManager** does the
+reconnecting. `s4-stranded-recovers.sh` asserts that path and *refutes* M4's log lines, so
+raising `ACTIVITY_TIMEOUT` above the tick fails the run instead of silently changing what is
+under test. M4's own path still works but is only reachable with `ACTIVITY_TIMEOUT=0`, and
+is kept under test separately as `s4b-m4-legacy-reconnect.sh`.
+
+Both assert S10 — the device's own AP never appears in its own scan.
+
+Confirmed in the field on `f5bffbf`, 2026-09-16: give-up at exactly 300.000159 s, associated
+13.1 s later, no M4 tick anywhere in the boot.
 
 ### The baseline it also produced
 
@@ -192,7 +203,7 @@ then times out, which reads like an auth failure and sends you hunting in the wr
 | S1 | No saved profile, start the stack, drive the portal over HTTP at `192.168.42.1` |
 | S2 | Pre-seed an `.nmconnection`, boot, assert the binary never launches |
 | S3 | Associate, then `systemctl stop hostapd`, assert the portal appears and when |
-| S4 | Start with hostapd down; bring it up and wait for an M4 tick to find it |
+| S4 | Start with hostapd down; bring it up and wait for the portal to give up and NM to reacquire |
 | S6 | hostapd up with no upstream route — proves association ≠ connectivity |
 | S7 | hostapd configured to reject associations, or `max_num_sta=0` |
 | S10 | Assert the portal SSID never appears in the binary's own `Access points:` log line |

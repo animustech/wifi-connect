@@ -31,3 +31,7 @@ dc_cargo() {
 
 - Specs: `docs/specs/`. Plans: `docs/plans/`.
 - `README.md` is the public-facing doc — don't restructure it casually; add new `docs/*.md` files for deeper internal explanations instead.
+
+## Bookkeeping
+
+Open work lives in agentmemory actions (project `wifi-connect`), not in this repo's docs. STATE.md holds only what is live and decided. Rules: `~/.claude/CLAUDE.md` › Bookkeeping.

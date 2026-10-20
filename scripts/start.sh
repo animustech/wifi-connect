@@ -81,7 +81,11 @@ SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-60}"
 # the hwsim rig, NetworkManager reacquires a returning AP in 5-10 s, while our own
 # reconnect tick is minutes. Camping on the radio makes recovery slower, not
 # faster. See docs/connectivity-scenarios.md.
-export ACTIVITY_TIMEOUT="${ACTIVITY_TIMEOUT:-300}"
+#
+# 600 s gives an installer time to reach the portal on board. It must stay below
+# the periodic reconnect tick (RECONNECT_INTERVAL_MINUTES x 60 = 900 s), so the
+# portal always gives up before that tick can fire.
+export ACTIVITY_TIMEOUT="${ACTIVITY_TIMEOUT:-600}"
 
 # After an unattended portal gives up, how long to leave the radio alone before
 # offering it again. Without this the loop would simply re-raise the portal a

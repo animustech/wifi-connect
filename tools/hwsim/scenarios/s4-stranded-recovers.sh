@@ -4,7 +4,7 @@
 # activity timeout is shorter than the periodic-reconnect tick, so the portal
 # always gives up first and M4 never fires.
 #
-# That ordering is the whole point. Shipped defaults are ACTIVITY_TIMEOUT=300
+# That ordering is the whole point. Shipped defaults are ACTIVITY_TIMEOUT=600
 # against RECONNECT_INTERVAL_MINUTES=15 (900 s), so recovery comes from handing
 # wlan0 back to NetworkManager, not from M4. Measured in the field on f5bffbf,
 # 2026-09-16: 13.1 s from give-up to associated. See docs/connectivity-scenarios.md
@@ -16,7 +16,7 @@ learn_network "Deep Runner-IOT" testpass123 || { sfail "setup: could not learn t
 "$AP" down 1 >/dev/null; sleep 3
 
 # ACTIVITY_TIMEOUT (20 s) < the M4 tick (RECONNECT_INTERVAL_MINUTES=1, i.e. 60 s),
-# mirroring the shipped 300 s < 900 s. Raise the timeout above the tick and this
+# mirroring the shipped 600 s < 900 s. Raise the timeout above the tick and this
 # scenario stops testing the production path.
 device_up ACTIVITY_TIMEOUT=20 PORTAL_RETRY_GAP=30
 wait_for 90 portal_is_up || { sfail "portal never came up"; return 0; }

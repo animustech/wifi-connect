@@ -38,7 +38,7 @@ loop: it re-decides every `SUPERVISE_INTERVAL` whether the binary needs launchin
 | `RECONNECT_ENABLED` | true | M4 on/off |
 | `RECONNECT_INTERVAL_MINUTES` | 15 | M4 tick — longer than `ACTIVITY_TIMEOUT`, so M4 never fires |
 | `RECONNECT_RESCAN_EVERY` | 2 | Force a fresh scan every Nth tick |
-| `ACTIVITY_TIMEOUT` | 300 s | The portal gives up if nobody opens it in that time, handing the radio back |
+| `ACTIVITY_TIMEOUT` | 600 s | The portal gives up if nobody opens it in that time, handing the radio back |
 | `PORTAL_RETRY_GAP` | 900 s | After it gives up, how long the radio is left to NetworkManager before offering the portal again |
 | `RECOVERY_GRACE` | 30 s | After it gives up, how long NetworkManager gets to reconnect by itself before M5 activates a visible saved network explicitly |
 | `NM_STATE_LOG` | `/data/nm-state.log` (1 MiB) | Where the `NM state: ...` lines are also kept; past 1 MiB only the newest 512 KiB survives |
@@ -178,7 +178,7 @@ M3 raises the AP. What then rescues the device is **not** M4.
 ACTIVITY_TIMEOUT > RECONNECT_INTERVAL_MINUTES x 60      (or ACTIVITY_TIMEOUT = 0)
 ```
 
-Shipped defaults are 300 s against 900 s, so the portal always exits first and **M4 never
+Shipped defaults are 600 s against 900 s, so the portal always exits first and **M4 never
 ticks in production**. It is vestigial rather than broken: `ACTIVITY_TIMEOUT` arrived with
 the duty-cycle work, after M4 was written, and superseded it.
 
@@ -192,7 +192,7 @@ anything:
 
 ```
 08:01:17.780  Starting HTTP server on 192.168.42.1:80
-08:06:17.780  Timeout reached. Exiting...                  <- exactly 300.000159 s
+08:06:17.780  Timeout reached. Exiting...                  <- exactly 300.000159 s (the default then)
 08:06:17.782  NM: activated -> deactivating (reason 'connection-removed')
 08:06:25.380  NM: policy: auto-activating connection '#Skyroam_t0n'
 08:06:30.922  NM: Activation: successful, device activated
@@ -419,7 +419,7 @@ answer to "how long should we wait for an absent AP to come back" — that is a 
 question with a different answer, and loading both onto one knob is how it briefly ended up
 at 300 s.
 
-**Implemented.** `ACTIVITY_TIMEOUT` defaults to 120 s here, against upstream's 0: the portal
+**Implemented.** `ACTIVITY_TIMEOUT` defaults to 600 s here, against upstream's 0: the portal
 gives up if nobody opens it (`src/network.rs` — `NetworkCommand::Timeout` returns when
 `!self.activated`, and `run()` calls `stop()` unconditionally, which deletes the portal
 profile and releases the radio). `PORTAL_RETRY_GAP` then leaves the radio alone for 15
@@ -438,8 +438,10 @@ mode (compressed timings — the ratio transfers, not the absolute numbers):
 | 20 s timeout : 60 s gap (1:3) | 34% | 66% |
 | 50 s timeout : 150 s gap (1:3, the shipped ratio) | 27% | 73% |
 
-The shipped 300 s : 900 s is that same 1:3 ratio, so expect roughly **27% held**. Widening
-the gap to 1800 s would land near 14%, at the cost of a longer wait for an installer who
+The earlier shipped 300 s : 900 s was that same 1:3 ratio (roughly **27% held**). The shipped
+600 s : 900 s holds the radio about 39% of the time over a long outage, the price of giving an
+installer 10 minutes to reach the portal. Widening the gap to 1800 s at the 1:3 ratio would
+land near 14%, at the cost of a longer wait for an installer who
 misses the portal window.
 
 The provisioning trade-off is real: an installer who takes longer than `ACTIVITY_TIMEOUT`

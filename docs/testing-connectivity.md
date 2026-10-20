@@ -163,7 +163,7 @@ vessel APs (so ordering can be tested) and a neighbouring Loci unit's portal.
 portal up, the vessel AP returning, nobody touching anything — it recovers.
 
 Note *how* it recovers, because the rig originally got this wrong. At production settings
-the portal's `ACTIVITY_TIMEOUT` (300 s) expires long before M4's first tick (900 s), so the
+the portal's `ACTIVITY_TIMEOUT` (600 s) expires before M4's first tick (900 s), so the
 portal gives up, deletes its profile and hands `wlan0` back, and **NetworkManager** does the
 reconnecting. `s4-stranded-recovers.sh` asserts that path and *refutes* M4's log lines, so
 raising `ACTIVITY_TIMEOUT` above the tick fails the run instead of silently changing what is
@@ -172,7 +172,7 @@ is kept under test separately as `s4b-m4-legacy-reconnect.sh`.
 
 Both assert S10 — the device's own AP never appears in its own scan.
 
-Confirmed in the field on `f5bffbf`, 2026-09-16: give-up at exactly 300.000159 s, associated
+Confirmed in the field on `f5bffbf`, 2026-09-16 (when the default was 300 s): give-up at exactly 300.000159 s, associated
 13.1 s later, no M4 tick anywhere in the boot.
 
 ### The baseline it also produced

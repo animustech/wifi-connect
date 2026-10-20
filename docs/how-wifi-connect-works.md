@@ -56,7 +56,7 @@ step-by-step captive-portal walkthrough in the main [README](../README.md#how-it
   captive-portal visit. Setting `RECONNECT_RESCAN_EVERY=0` disables this and reverts to
   never rescanning without a candidate already in hand.
 - If nobody visits the captive portal for `ACTIVITY_TIMEOUT` seconds, wifi-connect exits
-  without ever having connected (this timeout is disabled by default).
+  without ever having connected (upstream disables this timeout; `scripts/start.sh` defaults it to 600 s).
 
 ### Periodic reconnect flow
 

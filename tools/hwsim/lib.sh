@@ -63,6 +63,8 @@ refute_log()   { device_log | grep -q -- "$1" && sfail "unexpected log: $1"; ret
 # Every scenario must leave the rig in a known state or the next one inherits it.
 reset_rig() {
     device_down
+    # A radio left blocked by an earlier scenario would leak into the next one.
+    nmcli device set wlan0 autoconnect yes >/dev/null 2>&1
     forget_all_wifi
     for s in 1 2 peer; do "$AP" down "$s" >/dev/null 2>&1; done
     nmcli -t -f NAME connection show 2>/dev/null | grep -E "^Loci-AP-" | \

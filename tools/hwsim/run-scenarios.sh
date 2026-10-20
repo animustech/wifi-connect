@@ -14,6 +14,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 
 FILTER="${1:-}"
+LOG_DIR="${LOG_DIR:-/tmp/hwsim-logs}"
 TOTAL=0; FAILED=0; DESCRIPTION=""
 describe() { DESCRIPTION="$1"; }
 
@@ -31,6 +32,8 @@ for f in "$HERE"/scenarios/*.sh; do
     fi
     # shellcheck disable=SC1090
     . "$f"
+    # Keep each scenario's device log; the next reset_rig removes the container.
+    mkdir -p "$LOG_DIR" && device_log > "$LOG_DIR/$name.log" 2>/dev/null
     if [ "$SFAIL" -eq 0 ]; then printf '  ok    %s\n' "$DESCRIPTION"
     else printf '  FAIL  %s\n' "$DESCRIPTION"; FAILED=$((FAILED + 1)); fi
 done

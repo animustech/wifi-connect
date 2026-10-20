@@ -27,6 +27,18 @@ wait_for 90 portal_is_up || { sfail "portal never came up"; return 0; }
 "$AP" up 1 "Deep Runner-IOT" testpass123 >/dev/null
 wait_for 150 joined_a_network || { sfail "still stranded"; return 0; }
 
+# The supervisor logs how it got back on its next poll; let that line land.
+i=0
+while [ "$i" -lt 40 ]; do
+    device_log | grep -q "Recovery: " && break
+    sleep 2; i=$((i + 2))
+done
+
+# NetworkManager must reconnect by itself within the grace period; an explicit
+# activation here would mean the supervisor stepped in too early.
+assert_log "Recovery: NetworkManager reconnected by itself"
+refute_log "Recovery: activating"
+
 assert_log "Timeout reached. Exiting..."
 assert_log "gave up - leaving the radio to NetworkManager"
 

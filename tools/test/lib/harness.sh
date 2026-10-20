@@ -174,6 +174,7 @@ STUB
 #!/usr/bin/env bash
 T="$WCSTART_TMP"
 printf '%s\n' "$*" >> "$T/wifi_connect.argv"
+printf '%s\n' "${ACTIVITY_TIMEOUT-unset}" >> "$T/wifi_connect.activity_timeout"
 if [ -f "$T/wifi_connect.joins" ]; then
     cp "$T/wifi_connect.joins" "$T/iwgetid.override"
 fi
@@ -248,14 +249,19 @@ STUB
 
 # --------------------------------------------------------------- execution
 
-# run_start_sh [--passes N] [VAR=VALUE ...]
+# run_start_sh [--passes N] [--default-activity-timeout] [VAR=VALUE ...]
+#   --default-activity-timeout  leave ACTIVITY_TIMEOUT unset for start.sh, so the
+#                               shipped default applies (otherwise it is forced to 0)
 run_start_sh() {
     local passes=1
     local -a extra_env
     extra_env=()
+    local -a activity_env
+    activity_env=("ACTIVITY_TIMEOUT=${ACTIVITY_TIMEOUT:-0}")
     while [ $# -gt 0 ]; do
         case "$1" in
             --passes) passes="$2"; shift 2 ;;
+            --default-activity-timeout) activity_env=(); shift ;;
             *) extra_env[${#extra_env[@]}]="$1"; shift ;;
         esac
     done
@@ -275,7 +281,7 @@ run_start_sh() {
         WIFI_CHECK_INTERVAL="${WIFI_CHECK_INTERVAL:-1}" \
         SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-1}" \
         PORTAL_RETRY_GAP="${PORTAL_RETRY_GAP:-1}" \
-        ACTIVITY_TIMEOUT="${ACTIVITY_TIMEOUT:-0}" \
+        ${activity_env[@]+"${activity_env[@]}"} \
         RECOVERY_GRACE="${RECOVERY_GRACE:-1}" \
         NM_STATE_LOG="${NM_STATE_LOG:-$TMP/nm-state.log}" \
         RECONNECT_HISTORY="${RECONNECT_HISTORY:-$TMP/reconnect-history.json}" \
@@ -302,6 +308,12 @@ refute_launched() {
         _fail "expected wifi-connect NOT to be launched, it was $(wc -l < "$TMP/wifi_connect.argv" | tr -d ' ')x"
         _dump
     fi
+}
+
+# assert_activity_timeout <seconds>: what the binary actually received, from its env.
+assert_activity_timeout() {
+    grep -qx -- "$1" "$TMP/wifi_connect.activity_timeout" 2>/dev/null \
+        || _fail "expected wifi-connect to receive ACTIVITY_TIMEOUT=$1, got: $(tr '\n' ' ' < "$TMP/wifi_connect.activity_timeout" 2>/dev/null)"
 }
 
 assert_launch_count() {

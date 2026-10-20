@@ -2,6 +2,8 @@
 
 export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/host/run/dbus/system_bus_socket
 
+. "$(dirname "${BASH_SOURCE[0]}")/nm.sh"
+
 # True (exit 0) if any non-loopback, non-wireless, physical-device-backed interface
 # currently has a global IPv4 address, i.e. a wired connection is genuinely up (not
 # just cabled but still negotiating DHCP). Restricted to interfaces with a real
@@ -86,6 +88,13 @@ export ACTIVITY_TIMEOUT="${ACTIVITY_TIMEOUT:-300}"
 # minute later and the timeout would buy nothing.
 PORTAL_RETRY_GAP="${PORTAL_RETRY_GAP:-900}"
 
+# After giving up, how long NetworkManager gets to reconnect on its own before we
+# step in. NM can keep a saved profile blocked from autoconnect for weeks without
+# saying so (measured in the field: 21 days), so waiting out PORTAL_RETRY_GAP never
+# helps. Past the grace, a visible saved profile is activated explicitly, and an
+# explicit activation overrides those blocks.
+RECOVERY_GRACE="${RECOVERY_GRACE:-30}"
+
 # Supervision loop, not a one-shot boot gate.
 #
 # wifi-connect exits as soon as it successfully joins a network - that is
@@ -114,6 +123,7 @@ while true; do
                 printf 'WiFi connected to %s\n' "$(iwgetid -r)"
             fi
             last_state="connected"
+            nm_log_state
         fi
         sleep "$SUPERVISE_INTERVAL"
         continue
@@ -124,6 +134,7 @@ while true; do
             "$WIFI_CHECK_TIMEOUT"
     fi
     last_state="disconnected"
+    nm_log_state
 
     elapsed=0
     if [ "$(iwgetid -r 2>/dev/null)" = "$PORTAL_SSID" ]; then
@@ -160,6 +171,23 @@ while true; do
         # that while we hold the interface.
         printf 'WiFi Connect gave up - leaving the radio to NetworkManager for %ss\n' \
             "$PORTAL_RETRY_GAP"
+        nm_log_state
+        elapsed=0
+        while ! connected && [ "$elapsed" -lt "$RECOVERY_GRACE" ]; do
+            sleep "$WIFI_CHECK_INTERVAL"
+            elapsed=$((elapsed + WIFI_CHECK_INTERVAL))
+        done
+        if connected; then
+            nm_log "Recovery: NetworkManager reconnected by itself"
+        elif nm_available; then
+            nm_recover_saved_networks
+            nm_log_state
+        fi
+        # Supervision resumes on the next pass if either route got us back.
+        if connected; then
+            continue
+        fi
+        nm_log "Recovery: nothing activated - waiting ${PORTAL_RETRY_GAP}s"
         sleep "$PORTAL_RETRY_GAP"
     fi
 done

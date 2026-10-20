@@ -225,6 +225,12 @@ Between the give-up and the end of `PORTAL_RETRY_GAP`, `start.sh` logs `NM state
 and, once the radio is back, `Recovery: NetworkManager reconnected by itself`. The
 NetworkManager journal still has the detail.
 
+At start-up it also logs `NetworkManager versions: nmcli <client> host <daemon>` (`-` for one
+it cannot read), and, when their major.minor differ, `NetworkManager version skew: ...`. A patch
+difference (the image's 1.52.1 against balenaOS's 1.52.0) logs only the first line. Before
+rolling a balenaOS update, compare its NetworkManager major.minor with the image's nmcli, and
+if they differ re-run s15 and s4 on the rig.
+
 One trap in the log above: the binary's `Access points:` line still listed the vessel SSID a
 minute after the AP was switched off. That is NetworkManager's scan cache, not ground truth.
 

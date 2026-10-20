@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Test harness for scripts/start.sh.
 #
-# start.sh reaches the outside world through exactly four things, and all four are
+# start.sh reaches the outside world through exactly five things, and all five are
 # replaceable from here:
 #
 #   iwgetid          stubbed on PATH
 #   ip               stubbed on PATH
+#   nmcli            stubbed on PATH, served from fixtures
 #   /sys/class/net   fixture tree, injected via SYSFS_ROOT
 #   ./wifi-connect   stubbed via WIFI_CONNECT_BIN
 #
@@ -100,6 +101,46 @@ fixture_wifi_connect_joins() {
     printf '%s' "$1" > "$TMP/wifi_connect.joins"
 }
 
+# fixture_nmcli_device FIELD=value ...
+#   What `nmcli device show wlan0` reports, e.g. GENERAL.STATE="30 (disconnected)".
+#   Without it the stub behaves like a missing device (exit 10).
+fixture_nmcli_device() {
+    printf '%s\n' "$@" > "$TMP/nmcli.device"
+}
+
+# fixture_nmcli_profile <uuid> <name> <ssid> <yes|no> [<mode>]
+#   A saved WiFi profile; <yes|no> is its autoconnect flag. May be called repeatedly.
+fixture_nmcli_profile() {
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-infrastructure}" \
+        >> "$TMP/nmcli.profiles"
+}
+
+# fixture_nmcli_visible <ssid> ...   what the cached scan list holds
+fixture_nmcli_visible() {
+    printf '%s\n' "$@" > "$TMP/nmcli.visible"
+}
+
+# fixture_nmcli_rescan_fails   `--rescan yes` exits 1, as when the radio is busy.
+#   Real nmcli 1.52 never does: on a refused or failed scan it prints the cached
+#   list with exit 0. The code must cope with both, so the stricter shape is kept.
+fixture_nmcli_rescan_fails() {
+    : > "$TMP/nmcli.rescan_fails"
+}
+
+# fixture_nmcli_version_warning   every nmcli call prints, on stderr, the warning real
+#   nmcli gives when its version differs from the NetworkManager daemon's.
+fixture_nmcli_version_warning() {
+    : > "$TMP/nmcli.version_warning"
+}
+
+# fixture_nmcli_up <uuid> ok|"ok-late <secs>"|"fail <msg>"
+#   Outcome of `nmcli connection up uuid <uuid>`. Success also makes the link read
+#   as associated to that profile's SSID, at once or <secs> later. No fixture
+#   behaves like a failure.
+fixture_nmcli_up() {
+    printf '%s\n' "$2" > "$TMP/nmcli.up.$1"
+}
+
 _write_stubs() {
     cat > "$TMP/bin/iwgetid" <<'STUB'
 #!/usr/bin/env bash
@@ -139,7 +180,70 @@ fi
 exit 0
 STUB
 
-    chmod +x "$TMP/bin/iwgetid" "$TMP/bin/ip" "$TMP/bin/wifi-connect"
+    # Serves only the invocations start.sh and nm.sh make. In -t mode without
+    # `--escape no` real nmcli backslash-escapes ':' and '\' inside values, and the
+    # profile listing reproduces that so the parser's unescaping is exercised.
+    cat > "$TMP/bin/nmcli" <<'STUB'
+#!/usr/bin/env bash
+T="$WCSTART_TMP"
+printf '%s\n' "$*" >> "$T/nmcli.argv"
+args=" $* "
+[ -f "$T/nmcli.version_warning" ] \
+    && echo "Warning: nmcli (1.52.1) and NetworkManager (1.52.0) versions don't match. Restarting NetworkManager is advised." >&2
+esc() { sed -e 's/\\/\\\\/g' -e 's/:/\\:/g'; }
+profile_ssid() { awk -F'\t' -v u="$1" '$1 == u { print $3 }' "$T/nmcli.profiles" 2>/dev/null; }
+case "$args" in
+    *" device show wlan0 "*)
+        [ -f "$T/nmcli.device" ] || exit 10
+        field="${args#* -g }"; field="${field%% *}"
+        grep "^$field=" "$T/nmcli.device" | head -n 1 | cut -d= -f2-
+        ;;
+    *" connection show uuid "*)
+        uuid="${args#* uuid }"; uuid="${uuid%% *}"
+        field="${args#* -g }"; field="${field%% *}"
+        case "$field" in
+            802-11-wireless.ssid) awk -F'\t' -v u="$uuid" '$1 == u { print $3 }' "$T/nmcli.profiles" 2>/dev/null ;;
+            802-11-wireless.mode) awk -F'\t' -v u="$uuid" '$1 == u { print $5 }' "$T/nmcli.profiles" 2>/dev/null ;;
+        esac
+        ;;
+    *" connection show "*)
+        [ -f "$T/nmcli.profiles" ] || exit 0
+        while IFS=$'\t' read -r uuid name ssid auto mode; do
+            printf '%s:802-11-wireless:%s:%s\n' "$uuid" "$auto" "$(printf '%s' "$name" | esc)"
+        done < "$T/nmcli.profiles"
+        ;;
+    *" device wifi list "*)
+        case "$args" in
+            *"--rescan yes"*) [ -f "$T/nmcli.rescan_fails" ] && exit 1 ;;
+        esac
+        [ -f "$T/nmcli.visible" ] && cat "$T/nmcli.visible"
+        ;;
+    *" connection up "*)
+        uuid="${args#* uuid }"; uuid="${uuid%% *}"
+        outcome="$(cat "$T/nmcli.up.$uuid" 2>/dev/null)"
+        case "$outcome" in
+            ok)
+                profile_ssid "$uuid" > "$T/iwgetid.override"
+                echo "Connection successfully activated"
+                ;;
+            ok-late*)
+                ( sleep "${outcome#ok-late }"; profile_ssid "$uuid" > "$T/iwgetid.override" ) >/dev/null 2>&1 &
+                echo "Connection successfully activated"
+                ;;
+            *)
+                echo "Error: Connection activation failed: ${outcome#fail }" >&2
+                exit 4
+                ;;
+        esac
+        ;;
+esac
+exit 0
+STUB
+
+    # The recovery order is read with jq, which the image carries.
+    ln -s "$(command -v jq)" "$TMP/bin/jq" 2>/dev/null || true
+
+    chmod +x "$TMP/bin/iwgetid" "$TMP/bin/ip" "$TMP/bin/wifi-connect" "$TMP/bin/nmcli"
 }
 
 # --------------------------------------------------------------- execution
@@ -172,7 +276,10 @@ run_start_sh() {
         SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-1}" \
         PORTAL_RETRY_GAP="${PORTAL_RETRY_GAP:-1}" \
         ACTIVITY_TIMEOUT="${ACTIVITY_TIMEOUT:-0}" \
-        "${extra_env[@]}" \
+        RECOVERY_GRACE="${RECOVERY_GRACE:-1}" \
+        NM_STATE_LOG="${NM_STATE_LOG:-$TMP/nm-state.log}" \
+        RECONNECT_HISTORY="${RECONNECT_HISTORY:-$TMP/reconnect-history.json}" \
+        ${extra_env[@]+"${extra_env[@]}"} \
         bash "$START_SH" > "$TMP/out.log" 2>&1
 }
 
@@ -212,6 +319,25 @@ refute_log() {
     return 0
 }
 
+# assert_log_count <n> <pattern>   the pattern appears on exactly n log lines
+assert_log_count() {
+    local want="$1" got
+    got="$(grep -c -- "$2" "$TMP/out.log" 2>/dev/null)"
+    [ "${got:-0}" = "$want" ] || { _fail "expected $want log line(s) with '$2', got ${got:-0}"; _dump; }
+}
+
+# assert_nmcli_called <substring>   some nmcli call's arguments contain it
+assert_nmcli_called() {
+    grep -qF -- "$1" "$TMP/nmcli.argv" 2>/dev/null \
+        || { _fail "expected an nmcli call containing: $1"; _dump_nmcli; }
+}
+
+refute_nmcli_called() {
+    grep -qF -- "$1" "$TMP/nmcli.argv" 2>/dev/null \
+        && { _fail "expected no nmcli call containing: $1"; _dump_nmcli; }
+    return 0
+}
+
 assert_portal_ssid() {
     grep -q -- "-s $1" "$TMP/wifi_connect.argv" \
         || { _fail "expected portal SSID $1"; _dump; }
@@ -223,6 +349,15 @@ _dump() {
     printf '      --- wifi-connect invocations ---\n'
     if [ -s "$TMP/wifi_connect.argv" ]; then
         sed 's/^/      /' "$TMP/wifi_connect.argv"
+    else
+        printf '      (none)\n'
+    fi
+}
+
+_dump_nmcli() {
+    printf '      --- nmcli invocations ---\n'
+    if [ -s "$TMP/nmcli.argv" ]; then
+        sed 's/^/      /' "$TMP/nmcli.argv"
     else
         printf '      (none)\n'
     fi

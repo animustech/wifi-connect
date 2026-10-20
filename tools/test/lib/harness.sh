@@ -77,19 +77,27 @@ fixture_ip() {
     printf '%s\n' "$@" > "$TMP/ip.ifaces"
 }
 
-# fixture_iwgetid <ssid|""> [--drop-after N] [--return-after N]
+# fixture_iwgetid <ssid|""> [--drop-after N] [--return-after N] [--return-after-portal N]
 #   Empty ssid means "not associated".
 #   --drop-after N    association is lost N seconds into the run
 #   --return-after N  and comes back N seconds into the run
+#   --return-after-portal N
+#                     and comes back N seconds after wifi-connect was last
+#                     launched, however long the run took to get there. Use it
+#                     for a return that must land inside the post-portal grace
+#                     period: a return timed from the start of the run races the
+#                     portal launch, whose time varies by whole seconds.
 fixture_iwgetid() {
     printf '%s' "${1:-}" > "$TMP/iwgetid.ssid"
     shift || true
     : > "$TMP/iwgetid.drop_after"
     : > "$TMP/iwgetid.return_after"
+    : > "$TMP/iwgetid.return_after_portal"
     while [ $# -gt 0 ]; do
         case "$1" in
             --drop-after)   printf '%s' "$2" > "$TMP/iwgetid.drop_after"; shift 2 ;;
             --return-after) printf '%s' "$2" > "$TMP/iwgetid.return_after"; shift 2 ;;
+            --return-after-portal) printf '%s' "$2" > "$TMP/iwgetid.return_after_portal"; shift 2 ;;
             *) echo "fixture_iwgetid: unknown option '$1'" >&2; exit 2 ;;
         esac
     done
@@ -151,7 +159,12 @@ ssid="$(cat "$T/iwgetid.ssid" 2>/dev/null)"
 elapsed=$(( $(date +%s) - $(cat "$T/started_at") ))
 drop="$(cat "$T/iwgetid.drop_after" 2>/dev/null)"
 back="$(cat "$T/iwgetid.return_after" 2>/dev/null)"
+backp="$(cat "$T/iwgetid.return_after_portal" 2>/dev/null)"
 if [ -n "$drop" ] && [ "$elapsed" -ge "$drop" ]; then
+    if [ -n "$backp" ] && [ -f "$T/wifi_connect.launched_at" ] \
+        && [ $(( $(date +%s) - $(cat "$T/wifi_connect.launched_at") )) -ge "$backp" ]; then
+        echo "$ssid"; exit 0
+    fi
     if [ -n "$back" ] && [ "$elapsed" -ge "$back" ]; then echo "$ssid"; exit 0; fi
     exit 1
 fi
@@ -175,6 +188,7 @@ STUB
 T="$WCSTART_TMP"
 printf '%s\n' "$*" >> "$T/wifi_connect.argv"
 printf '%s\n' "${ACTIVITY_TIMEOUT-unset}" >> "$T/wifi_connect.activity_timeout"
+date +%s > "$T/wifi_connect.launched_at"
 if [ -f "$T/wifi_connect.joins" ]; then
     cp "$T/wifi_connect.joins" "$T/iwgetid.override"
 fi

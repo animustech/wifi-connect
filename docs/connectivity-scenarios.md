@@ -18,6 +18,7 @@ There are four, and confusing them is what made this hard to reason about.
 | M2 | WiFi association poll | `scripts/start.sh` | Every supervision pass |
 | M3 | Captive portal | `wifi-connect` binary | Only while the binary runs |
 | M4 | Periodic reconnect | `wifi-connect` binary (`src/network.rs`) | Never, at shipped settings — see S4 |
+| M5 | Post-give-up recovery | `scripts/start.sh` + `scripts/nm.sh` | After every give-up — see S15 |
 
 **The single most important fact:** M3 and M4 exist only while the `wifi-connect` process
 is alive, and that process **exits the moment it successfully joins a network**. That is
@@ -39,6 +40,8 @@ loop: it re-decides every `SUPERVISE_INTERVAL` whether the binary needs launchin
 | `RECONNECT_RESCAN_EVERY` | 2 | Force a fresh scan every Nth tick |
 | `ACTIVITY_TIMEOUT` | 300 s | The portal gives up if nobody opens it in that time, handing the radio back |
 | `PORTAL_RETRY_GAP` | 900 s | After it gives up, how long the radio is left to NetworkManager before offering the portal again |
+| `RECOVERY_GRACE` | 30 s | After it gives up, how long NetworkManager gets to reconnect by itself before M5 activates a visible saved network explicitly |
+| `NM_STATE_LOG` | `/data/nm-state.log` (1 MiB) | Where the `NM state: ...` lines are also kept; past 1 MiB only the newest 512 KiB survives |
 
 All are environment variables, so all can be changed on a balena fleet **without a
 release**.
@@ -181,7 +184,8 @@ the duty-cycle work, after M4 was written, and superseded it.
 
 **What actually recovers the device** is the give-up path. The portal exits at
 `ACTIVITY_TIMEOUT`, deletes its own profile, and hands `wlan0` back to NetworkManager,
-which auto-activates the saved vessel profile.
+which auto-activates the saved vessel profile. If NetworkManager does not, M5 is the
+fallback: after `RECOVERY_GRACE` it activates the saved network itself (see S15).
 
 **Measured in the field** — `f5bffbf`, 2026-09-16, production settings, nobody touching
 anything:
@@ -217,9 +221,9 @@ the best possible state: radio released, nothing holding it. At upstream's
 to walk up with a phone — the failure that took a production vessel dark three times in
 twelve days.
 
-`start.sh` logs nothing between the give-up and the end of `PORTAL_RETRY_GAP`, so **silence
-there is the design working, not a hang**. The reconnect evidence lives only in the
-NetworkManager journal.
+Between the give-up and the end of `PORTAL_RETRY_GAP`, `start.sh` logs `NM state: ...` lines
+and, once the radio is back, `Recovery: NetworkManager reconnected by itself`. The
+NetworkManager journal still has the detail.
 
 One trap in the log above: the binary's `Access points:` line still listed the vessel SSID a
 minute after the AP was switched off. That is NetworkManager's scan cache, not ground truth.
@@ -233,6 +237,42 @@ dashboard makes a 13-second recovery look like a 7-minute one.
 legacy behaviour is kept under test separately, in `s4b-m4-legacy-reconnect.sh`, which has
 to force `ACTIVITY_TIMEOUT=0` to reach it at all — that override is the proof M4 is
 unreachable otherwise.
+
+The scenario asserts that NetworkManager reconnects by itself within `RECOVERY_GRACE`
+(`Recovery: NetworkManager reconnected by itself`) and that no explicit activation fires.
+On the rig, with the AP back before the give-up, that took about 5 s.
+
+### S15 — NetworkManager holds a saved profile blocked from autoconnect
+
+In the field (`ed682d4`, unit "50022") NetworkManager kept the vessel profile blocked from
+autoconnect for 21 days while its SSID was visible; the portal gave up 216 times in three
+days and handing the radio back never helped, and only a power cut cleared it. Waiting for
+NetworkManager is not a recovery when NetworkManager itself refuses to try.
+
+**M5** covers it. After a give-up and `RECOVERY_GRACE` (30 s) with no connection, `start.sh`
+activates each visible saved profile with autoconnect on, in reconnect-history order
+(`nmcli --wait 45 connection up uuid <uuid> ifname wlan0`), and logs one of
+`Recovery: activating saved profile '<name>' -> activated|failed: <msg>`,
+`Recovery: no saved network to activate (<n> SSIDs visible)` or
+`Recovery: nothing activated - waiting <gap>s`. An explicit activation is not subject to
+the autoconnect block.
+
+**The inducer that held on the rig** is `nmcli device disconnect wlan0` run before the
+container starts. It survived a whole portal cycle: the device stayed stranded 90 s past the
+give-up on the old code (`still stranded 90s after give-up`). The portal's own activity did
+**not** clear the block. `reset_rig` runs `nmcli device set wlan0 autoconnect yes` so the
+block cannot leak into the next scenario.
+The state log read `dev-autoconnect=yes` right after the give-up while the device was still
+stranded, so the device-level flag alone does not explain the block; what matters is that
+the old code stayed stranded and an explicit activation did not.
+
+**Measured:** give-up to associated was 33 s on the rig, the 30 s grace plus about 3 s for
+the activation (`Recovery: activating saved profile 'Deep Runner-IOT' -> activated`).
+
+**Covered by `tools/hwsim/scenarios/s15-autoconnect-blocked.sh`**, which also requires the
+portal to have given up first, so a red run proves the give-up path ran and a green run
+proves the recovery came after it. Tier 1 covers the decisions (history order, fall-through,
+profiles that must not be candidates, a refused rescan) with a stubbed `nmcli`.
 
 ### S5 — A stale portal profile survives an ungraceful exit
 
@@ -425,6 +465,7 @@ Tier 1 is `tools/test/run.sh` (12 cases, stubbed tools, no radio, seconds). Tier
 | S2 associated at boot | yes | — |
 | S3 link lost later, and the brief-flap debounce | yes | — |
 | S4 stranded, unattended recovery | yes | yes |
+| S15 blocked autoconnect, explicit activation after give-up | yes (stubbed `nmcli`) | yes |
 | S5 stale portal AP, both branches | yes | — |
 | S6 associated with no route | — | yes (characterisation: must do nothing) |
 | S7 AP present but rejecting | — | yes |

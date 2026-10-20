@@ -64,9 +64,9 @@ assert_log "Stale portal AP"
 refute_log "WiFi connected to Loci-AP"
 ```
 
-Ten cases at present: S0 wired, S0 bridges-only (the field-bricking regression), S2
+27 cases at present, among them S0 wired, S0 bridges-only (the field-bricking regression), S2
 associated, S3 link-lost, S3 brief-flap-is-debounced, S4 never-associates, S5 own-AP, S5
-no-pointless-wait, S11 wired-while-WiFi-down, S12 `wwan0`-reads-as-wired.
+no-pointless-wait, S11 wired-while-WiFi-down, S12 `wwan0`-reads-as-wired, and the S15 post-give-up recovery cases (a stubbed `nmcli`).
 
 No CI yet, by choice. It is an executable you run.
 
@@ -136,11 +136,11 @@ radio. Everything else is real: NetworkManager, D-Bus, wpa_supplicant, the radio
 rig hit this at all is itself a faithful reproduction of S0 and S12.
 
 ```bash
-limactl shell wifitest sudo /tmp/hwsim/run-scenarios.sh        # all nine
+limactl shell wifitest sudo /tmp/hwsim/run-scenarios.sh        # all eleven
 limactl shell wifitest sudo /tmp/hwsim/run-scenarios.sh s7     # one
 ```
 
-Nine scenarios, each asserted rather than eyeballed. Four virtual radios: the device, two
+Eleven scenarios, each asserted rather than eyeballed. Four virtual radios: the device, two
 vessel APs (so ordering can be tested) and a neighbouring Loci unit's portal.
 
 ### Traps that cost time, so they are in the scripts

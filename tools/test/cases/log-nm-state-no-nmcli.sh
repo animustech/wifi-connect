@@ -8,3 +8,4 @@ rm -f "$TMP/bin/nmcli"
 run_start_sh --passes 2
 assert_log_count 1 "NetworkManager tools not available"
 assert_log "gave up - leaving the radio to NetworkManager"
+refute_log "NetworkManager versions"

@@ -107,6 +107,25 @@ nm_log_state() {
     nm_available && nm_log "$(nm_state_line)"
 }
 
+# nm_log_versions: the nmcli client and host NetworkManager versions, once at
+# start-up, in the persisted log. The client is the image's, the host is whatever
+# balenaOS ships, and an OS update can move them apart. A patch-level difference is
+# routine; a different major.minor means recovery has not been tried against that host.
+nm_log_versions() {
+    local client host cmm hmm
+    nm_available || return 0
+    client="$(nmcli --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+    host="$(nmcli -t -f VERSION general 2>/dev/null | head -n 1)" || host=""
+    case "$host" in [0-9]*) ;; *) host="" ;; esac
+    nm_log "NetworkManager versions: nmcli ${client:--} host ${host:--}"
+    [ -n "$client" ] && [ -n "$host" ] || return 0
+    cmm="$(printf '%s' "$client" | cut -d. -f1,2)"
+    hmm="$(printf '%s' "$host" | cut -d. -f1,2)"
+    if [ "$cmm" != "$hmm" ]; then
+        nm_log "NetworkManager version skew: nmcli $cmm vs host $hmm - re-test recovery against this host version"
+    fi
+}
+
 RECONNECT_HISTORY="${RECONNECT_HISTORY:-/data/reconnect-history.json}"
 
 # nm_recovery_candidates: uuid<TAB>ssid<TAB>name for each saved profile worth

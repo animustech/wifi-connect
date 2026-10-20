@@ -99,6 +99,8 @@ PORTAL_RETRY_GAP="${PORTAL_RETRY_GAP:-900}"
 # explicit activation overrides those blocks.
 RECOVERY_GRACE="${RECOVERY_GRACE:-30}"
 
+nm_log_versions
+
 # Supervision loop, not a one-shot boot gate.
 #
 # wifi-connect exits as soon as it successfully joins a network - that is

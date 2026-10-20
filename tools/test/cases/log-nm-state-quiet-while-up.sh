@@ -6,5 +6,5 @@ fixture_ip
 fixture_iwgetid "Vessel"
 run_start_sh --passes 3
 assert_log_count 1 "NM state:"
-[ "$(grep -c . "$TMP/nm-state.log")" = 1 ] \
-    || { _fail "expected exactly 1 line in the state file"; _dump; }
+[ "$(grep -c "NM state:" "$TMP/nm-state.log")" = 1 ] \
+    || { _fail "expected exactly 1 NM state line in the state file"; _dump; }

@@ -141,6 +141,16 @@ fixture_nmcli_version_warning() {
     : > "$TMP/nmcli.version_warning"
 }
 
+# fixture_nmcli_versions <client> [<daemon>]
+#   The version `nmcli --version` reports and the NetworkManager daemon version
+#   `nmcli -t -f VERSION general` reports. Without a daemon version that query fails,
+#   as when the host's NetworkManager cannot be reached. Unset, they read 1.52.1 and
+#   1.52.0.
+fixture_nmcli_versions() {
+    printf '%s\n' "$1" > "$TMP/nmcli.client_version"
+    printf '%s\n' "${2:-}" > "$TMP/nmcli.daemon_version"
+}
+
 # fixture_nmcli_up <uuid> ok|"ok-late <secs>"|"fail <msg>"
 #   Outcome of `nmcli connection up uuid <uuid>`. Success also makes the link read
 #   as associated to that profile's SSID, at once or <secs> later. No fixture
@@ -208,6 +218,18 @@ args=" $* "
 esc() { sed -e 's/\\/\\\\/g' -e 's/:/\\:/g'; }
 profile_ssid() { awk -F'\t' -v u="$1" '$1 == u { print $3 }' "$T/nmcli.profiles" 2>/dev/null; }
 case "$args" in
+    *" --version "*)
+        echo "nmcli tool, version $(cat "$T/nmcli.client_version" 2>/dev/null || echo 1.52.1)"
+        ;;
+    *" -f VERSION general "*)
+        if [ -f "$T/nmcli.daemon_version" ]; then
+            v="$(cat "$T/nmcli.daemon_version")"
+            [ -n "$v" ] || exit 8
+            echo "$v"
+        else
+            echo 1.52.0
+        fi
+        ;;
     *" device show wlan0 "*)
         [ -f "$T/nmcli.device" ] || exit 10
         field="${args#* -g }"; field="${field%% *}"
